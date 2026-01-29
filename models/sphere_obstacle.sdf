@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="sphere_obstacle">
+    <link name="sphere_body">
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.004</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.004</iyy>
+          <iyz>0</iyz>
+          <izz>0.004</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <geometry>
+          <sphere>
+            <radius>0.05</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <diffuse>1.0 0.0 0.0 0.25</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <geometry>
+          <sphere>
+            <radius>0.05</radius>
+          </sphere>
+        </geometry>
+        <drake:proximity_properties>
+          <drake:compliant_hydroelastic/>
+          <drake:hydroelastic_modulus>1e8</drake:hydroelastic_modulus>
+          <drake:mesh_resolution_hint>0.05</drake:mesh_resolution_hint>
+          <drake:mu_dynamic>0.5</drake:mu_dynamic>
+          <drake:mu_static>0.5</drake:mu_static>
+        </drake:proximity_properties>
+      </collision>
+    </link>
+  </model>
+</sdf>
