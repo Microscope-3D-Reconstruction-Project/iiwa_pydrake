@@ -9,41 +9,21 @@ from manipulation.station import LoadScenario
 from pydrake.all import (
     ApplySimulatorConfig,
     DiagramBuilder,
-    MeshcatPoseSliders,
+    JointSliders,
     MeshcatVisualizer,
     Simulator,
 )
-
 from pydrake.systems.drawing import plot_system_graphviz
+from pydrake.systems.primitives import FirstOrderLowPassFilter
 
 from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
 
 
 def main(use_hardware: bool, has_wsg: bool) -> None:
-    scenario_data = (
-        """
+    scenario_data = """
     directives:
     - add_directives:
-        file: package://manipulation/iiwa_and_wsg.dmd.yaml
-    plant_config:
-        time_step: 0.005
-        contact_model: "hydroelastic"
-        discrete_contact_approximation: "sap"
-    model_drivers:
-        iiwa: !IiwaDriver
-            lcm_bus: "default"
-            hand_model_name: wsg
-            control_mode: position_only
-        wsg: !SchunkWsgDriver {}
-    lcm_buses:
-        default:
-            lcm_url: ""
-    """
-        if has_wsg
-        else """
-    directives:
-    - add_directives:
-        file: package://iiwa_setup/iiwa7.dmd.yaml
+        file: package://iiwa_setup/iiwa14.dmd.yaml
     plant_config:
         # For some reason, this requires a small timestep
         time_step: 0.005
@@ -57,7 +37,6 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         default:
             lcm_url: ""
     """
-    )
 
     builder = DiagramBuilder()
 
@@ -68,40 +47,29 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             scenario=scenario, has_wsg=has_wsg, use_hardware=use_hardware
         ),
     )
-    controller_plant = station.get_iiwa_controller_plant()
-    differential_ik = AddIiwaDifferentialIK(
-        builder,
-        controller_plant,
-        frame=controller_plant.GetFrameByName("iiwa_link_7"),
-    )
-    builder.Connect(
-        differential_ik.get_output_port(),
-        station.GetInputPort("iiwa.position"),
-    )
-    builder.Connect(
-        station.GetOutputPort("iiwa.state_estimated"),
-        differential_ik.GetInputPort("robot_state"),
-    )
 
     # Set up teleop widgets
+    controller_plant = station.get_iiwa_controller_plant()
     teleop = builder.AddSystem(
-        MeshcatPoseSliders(
+        JointSliders(
             station.internal_meshcat,
-            lower_limit=[0, -0.5, -np.pi, -0.6, -0.8, 0.0],
-            upper_limit=[2 * np.pi, np.pi, np.pi, 0.8, 0.3, 1.1],
+            controller_plant,
         )
     )
+
+    num_iiwa_joints = controller_plant.num_positions()
+    print("Number of iiwa joints:", num_iiwa_joints)
+    filter = builder.AddSystem(
+        FirstOrderLowPassFilter(time_constant=1.00, size=num_iiwa_joints)
+    )
+
+    builder.Connect(teleop.get_output_port(), filter.get_input_port())
+
     builder.Connect(
-        teleop.get_output_port(), differential_ik.GetInputPort("X_WE_desired")
+        filter.get_output_port(),
+        station.GetInputPort("iiwa.position"),
     )
-    iiwa_forward_kinematics = builder.AddSystem(
-        IiwaForwardKinematics(station.get_internal_plant())
-    )
-    builder.Connect(
-        station.GetOutputPort("iiwa.position_commanded"),
-        iiwa_forward_kinematics.get_input_port(),
-    )
-    builder.Connect(iiwa_forward_kinematics.get_output_port(), teleop.get_input_port())
+
     if has_wsg:
         wsg_teleop = builder.AddSystem(WsgButton(station.internal_meshcat))
         builder.Connect(

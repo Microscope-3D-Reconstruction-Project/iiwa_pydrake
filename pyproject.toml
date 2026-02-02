@@ -16,6 +16,8 @@ hydra-core = "^1.3.2"
 omegaconf = "^2.3.0"
 ipython = "^8.15.0"
 pyyaml = "^6.0.1"
+scipy = "<1.17"
+termcolor = "^3.3.0"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.4.0"

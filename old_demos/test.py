@@ -6,33 +6,29 @@ import numpy as np
 from manipulation.meshcat_utils import WsgButton
 from manipulation.scenarios import AddIiwaDifferentialIK
 from manipulation.station import LoadScenario
-
 from pydrake.all import (
     ApplySimulatorConfig,
-    DiagramBuilder,
-    JointSliders,
-    MeshcatVisualizer,
-    PiecewisePolynomial,
-    Simulator,
-    RigidTransform,
-    Sphere,
-    CoulombFriction,
-    Rgba,
-    InverseKinematics,
-    SpatialInertia,
-    UnitInertia,
-    SceneGraphCollisionChecker,
-    MinimumDistanceLowerBoundConstraint,
-    KinematicTrajectoryOptimization,
-    Solve,
-    Meshcat,
-    Rgba,
-    RigidTransform,
     BsplineBasis,
     BsplineTrajectory,
-    KnotVectorType
+    CoulombFriction,
+    DiagramBuilder,
+    InverseKinematics,
+    JointSliders,
+    KinematicTrajectoryOptimization,
+    KnotVectorType,
+    Meshcat,
+    MeshcatVisualizer,
+    MinimumDistanceLowerBoundConstraint,
+    PiecewisePolynomial,
+    Rgba,
+    RigidTransform,
+    SceneGraphCollisionChecker,
+    Simulator,
+    Solve,
+    SpatialInertia,
+    Sphere,
+    UnitInertia,
 )
-
 from pydrake.systems.drawing import plot_system_graphviz
 from pydrake.systems.primitives import FirstOrderLowPassFilter
 
@@ -41,7 +37,6 @@ from iiwa_setup.motion_planning.toppra import reparameterize_with_toppra
 
 
 def draw_sphere(meshcat, name, position, radius=0.01):
-
     rgba = Rgba(0.0, 1.0, 0.1, 0.5)
 
     meshcat.SetObject(
@@ -54,7 +49,10 @@ def draw_sphere(meshcat, name, position, radius=0.01):
         RigidTransform(np.array(position)),
     )
 
-def linear_bspline_for_trajopt(q_start, q_goal, num_control_points, duration=1.0, spline_order=3):
+
+def linear_bspline_for_trajopt(
+    q_start, q_goal, num_control_points, duration=1.0, spline_order=3
+):
     """
     Creates a straight-line B-spline trajectory with exactly num_control_points
     to match trajopt.
@@ -62,27 +60,30 @@ def linear_bspline_for_trajopt(q_start, q_goal, num_control_points, duration=1.0
     q_start = np.asarray(q_start)
     q_goal = np.asarray(q_goal)
     num_joints = q_start.shape[0]
-    
+
     # Create linear interpolation at each control point
     t_points = np.linspace(0, 1, num_control_points)
-    control_points = np.outer(1 - t_points, q_start) + np.outer(t_points, q_goal)  # shape: (num_control_points, num_joints)
+    control_points = np.outer(1 - t_points, q_start) + np.outer(
+        t_points, q_goal
+    )  # shape: (num_control_points, num_joints)
     control_points = control_points.T  # shape: (num_joints, num_control_points)
-    
+
     # Make Bspline basis
     from pydrake.math import BsplineBasis, KnotVectorType
+
     basis = BsplineBasis(
         order=spline_order,
         num_basis_functions=num_control_points,
         type=KnotVectorType.kClampedUniform,
         initial_parameter_value=0.0,
-        final_parameter_value=duration
+        final_parameter_value=duration,
     )
-    
+
     return BsplineTrajectory(basis, control_points.tolist())
 
+
 def main(use_hardware: bool, has_wsg: bool) -> None:
-    scenario_data = (
-    """
+    scenario_data = """
     directives:
     - add_directives:
         file: package://iiwa_setup/iiwa14.dmd.yaml
@@ -107,8 +108,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         default:
             lcm_url: ""
     """
-    )
-    
+
     builder = DiagramBuilder()
 
     scenario = LoadScenario(data=scenario_data)
@@ -129,7 +129,8 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
     )
 
     builder.Connect(
-        teleop.get_output_port(), station.GetInputPort("iiwa.position"),
+        teleop.get_output_port(),
+        station.GetInputPort("iiwa.position"),
     )
 
     if has_wsg:
@@ -152,16 +153,15 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
     station.internal_meshcat.AddButton("Stop Simulation")
     station.internal_meshcat.AddButton("Move to Goal")
 
-
     # ====================================================================
     # Trajectory Optimization + TOPPRA Loop
     # ====================================================================
 
     # Define goal position and limits
-    q_goal = np.array([0, np.pi/2, 0.0, 0.0, 0.0, 0.0, 0.0])
+    q_goal = np.array([0, np.pi / 2, 0.0, 0.0, 0.0, 0.0, 0.0])
     vel_limits = np.full(7, 0.5)  # rad/s
     acc_limits = np.full(7, 0.5)  # rad/s^2
-    
+
     # Get optimization plant and context
     optimization_plant = station.internal_station._optimization_plant
     optimization_plant_context = station.internal_station._optimization_plant_context
@@ -188,7 +188,6 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         )
 
         prog.AddConstraint(constraint, qvars)
-    
 
     # ====================================================================
     # Main Simulation Loop
@@ -205,12 +204,20 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
 
             # 1. Get current position
             station_context = station.GetMyContextFromRoot(simulator.get_context())
-            q_current = station.GetOutputPort("iiwa.position_measured").Eval(station_context)
-            
+            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
+                station_context
+            )
+
             # 2. Add extra constraints and costs
-            linear_bspline = linear_bspline_for_trajopt(q_current, q_goal, duration=1.0, spline_order=3, num_control_points=num_control_points)
+            linear_bspline = linear_bspline_for_trajopt(
+                q_current,
+                q_goal,
+                duration=1.0,
+                spline_order=3,
+                num_control_points=num_control_points,
+            )
             trajopt.SetInitialGuess(linear_bspline)
-            
+
             # Position
             trajopt.AddPathPositionConstraint(q_current, q_current, 0.0)
             trajopt.AddPathPositionConstraint(q_goal, q_goal, 1.0)
@@ -255,7 +262,9 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             geometric_path = trajopt.ReconstructTrajectory(result)
 
             # 4. Save path as img through matplotlib
-            ts = np.linspace(geometric_path.start_time(), geometric_path.end_time(), 100)
+            ts = np.linspace(
+                geometric_path.start_time(), geometric_path.end_time(), 100
+            )
             qs = np.array([geometric_path.value(t) for t in ts])
             plt.figure()
             for i in range(qs.shape[1]):
@@ -270,7 +279,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             # 5. Reparameterize with TOPPRA
             trajectory = reparameterize_with_toppra(
                 geometric_path,
-                controller_plant, # NOTE: don't need optimization_plant since collision avoidance is solved
+                controller_plant,  # NOTE: don't need optimization_plant since collision avoidance is solved
                 velocity_limits=vel_limits,
                 acceleration_limits=acc_limits,
             )
@@ -288,24 +297,28 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             plt.savefig("reparameterized_trajectory.png")
             plt.close()
 
-            print(f"✓ TOPPRA succeeded! Trajectory duration: {trajectory.end_time():.2f}s")
+            print(
+                f"✓ TOPPRA succeeded! Trajectory duration: {trajectory.end_time():.2f}s"
+            )
             trajectory_start_time = simulator.get_context().get_time()
 
         # If we have a trajectory, execute it
         if trajectory is not None:
             current_time = simulator.get_context().get_time()
             traj_time = current_time - trajectory_start_time
-            
+
             if traj_time <= trajectory.end_time():
                 q_desired = trajectory.value(traj_time)
                 station_context = station.GetMyMutableContextFromRoot(
                     simulator.get_mutable_context()
                 )
-                station.GetInputPort("iiwa.position").FixValue(station_context, q_desired)
+                station.GetInputPort("iiwa.position").FixValue(
+                    station_context, q_desired
+                )
             else:
                 print("✓ Trajectory execution complete!")
                 trajectory = None
-        
+
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 
     station.internal_meshcat.DeleteButton("Stop Simulation")

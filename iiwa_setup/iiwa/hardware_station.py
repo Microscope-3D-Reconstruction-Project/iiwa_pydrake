@@ -1,6 +1,7 @@
 import os
 
 from functools import partial
+from pathlib import Path
 from typing import List, Union
 
 import numpy as np
@@ -12,8 +13,9 @@ from manipulation.station import (
     MakeHardwareStation,
     Scenario,
 )
-from pydrake.all import (
+from pydrake.all import (  # MeshcatVisualizer,
     AbstractValue,
+    AddMultibodyPlantSceneGraph,
     BasicVector,
     CollisionFilterDeclaration,
     Context,
@@ -39,7 +41,6 @@ from pydrake.all import (
     State,
     position_enabled,
     torque_enabled,
-    AddMultibodyPlantSceneGraph
 )
 
 from iiwa_setup.util import get_package_xmls
@@ -51,27 +52,27 @@ class PlantUpdater(LeafSystem):
     the plant (adding it to the diagram).
     """
 
-    def __init__(self, plant: MultibodyPlant, has_wsg: bool):
+    def __init__(self, plant: MultibodyPlant):
         super().__init__()
 
         self._plant = plant
-        self._has_wsg = has_wsg
+        # self._has_wsg = has_wsg
 
         self._plant_context = None
         self._iiwa_model_instance_index = plant.GetModelInstanceByName("iiwa")
-        if self._has_wsg:
-            self._wsg_model_instance_index = plant.GetModelInstanceByName("wsg")
+        # if self._has_wsg:
+        #     self._wsg_model_instance_index = plant.GetModelInstanceByName("wsg")
 
         # Input ports
         self._iiwa_position_input_port = self.DeclareVectorInputPort(
             "iiwa.position",
             self._plant.num_positions(self._iiwa_model_instance_index),
         )
-        if self._has_wsg:
-            self._wsg_position_input_port = self.DeclareVectorInputPort(
-                "wsg.position",
-                self._plant.num_positions(self._wsg_model_instance_index),
-            )
+        # if self._has_wsg:
+        #     self._wsg_position_input_port = self.DeclareVectorInputPort(
+        #         "wsg.position",
+        #         self._plant.num_positions(self._wsg_model_instance_index),
+        #     )
 
         # Output ports
         self._position_output_port = self.DeclareVectorOutputPort(
@@ -112,13 +113,13 @@ class PlantUpdater(LeafSystem):
             self._iiwa_position_input_port.Eval(context),
         )
 
-        if self._has_wsg:
-            # Update wsg positions
-            self._plant.SetPositions(
-                self._plant_context,
-                self._wsg_model_instance_index,
-                self._wsg_position_input_port.Eval(context),
-            )
+        # if self._has_wsg:
+        #     # Update wsg positions
+        #     self._plant.SetPositions(
+        #         self._plant_context,
+        #         self._wsg_model_instance_index,
+        #         self._wsg_position_input_port.Eval(context),
+        #     )
 
     def _get_position(self, context: Context, output: BasicVector) -> None:
         if self._plant_context is None:
@@ -186,7 +187,7 @@ class InternalStationDiagram(Diagram):
     def __init__(
         self,
         scenario: Scenario,
-        has_wsg: bool,
+        # has_wsg: bool,
         package_xmls: List[str] = [],
     ):
         super().__init__()
@@ -198,7 +199,7 @@ class InternalStationDiagram(Diagram):
         self._plant.set_name("internal_plant")
         self._scene_graph = builder.AddNamedSystem("scene_graph", SceneGraph())
         self._plant.RegisterAsSourceForSceneGraph(self._scene_graph)
-                
+
         parser = Parser(self._plant)
         for p in package_xmls:
             parser.package_map().AddPackageXml(p)
@@ -212,9 +213,16 @@ class InternalStationDiagram(Diagram):
 
         self._plant.Finalize()
 
+        # Add coord. frame visualizer
+        # self._internal_frame_viz = MeshcatVisualizer.AddToBuilder(
+        #     builder=builder,              # or DiagramBuilder used to build InternalStationDiagram
+        #     scene_graph=self._scene_graph,     # internal station's scene graph
+        #     draw_frames=True                    # <-- key: draw all frames
+        # )
+
         # Add system for updating the plant
         self._plant_updater: PlantUpdater = builder.AddNamedSystem(
-            "plant_updater", PlantUpdater(plant=self._plant, has_wsg=has_wsg)
+            "plant_updater", PlantUpdater(plant=self._plant)
         )
 
         # Connect the plant to the scene graph
@@ -236,15 +244,17 @@ class InternalStationDiagram(Diagram):
         # Make the plant for the iiwa controller
         self._iiwa_controller_plant = MultibodyPlant(time_step=self._plant.time_step())
         controller_iiwa = AddIiwa(self._iiwa_controller_plant)
-        if has_wsg:
-            AddWsg(self._iiwa_controller_plant, controller_iiwa, welded=True)
-        
+        # if has_wsg:
+        #     AddWsg(self._iiwa_controller_plant, controller_iiwa, welded=True)
+
         self._iiwa_controller_plant.Finalize()
 
         temp_builder = DiagramBuilder()
-        self._optimization_plant, self._optimization_scene_graph = AddMultibodyPlantSceneGraph(
-            temp_builder,
-            time_step=0.0  # Continuous time for optimization
+        (
+            self._optimization_plant,
+            self._optimization_scene_graph,
+        ) = AddMultibodyPlantSceneGraph(
+            temp_builder, time_step=0.0  # Continuous time for optimization
         )
 
         # Load the same models as the internal plant
@@ -252,22 +262,26 @@ class InternalStationDiagram(Diagram):
         for p in package_xmls:
             opt_parser.package_map().AddPackageXml(p)
         ConfigureParser(opt_parser)
-        
+
         ProcessModelDirectives(
             directives=ModelDirectives(directives=scenario.directives),
             parser=opt_parser,
         )
-        
+
         # Finalize the plant BEFORE building the diagram
         self._optimization_plant.Finalize()
 
         # Build the diagram (this creates a mini-diagram just for collision queries)
         self._optimization_diagram = temp_builder.Build()
-        
+
         # Create contexts
-        self._optimization_diagram_context = self._optimization_diagram.CreateDefaultContext()
-        self._optimization_plant_context = self._optimization_diagram.GetSubsystemContext(
-            self._optimization_plant, self._optimization_diagram_context
+        self._optimization_diagram_context = (
+            self._optimization_diagram.CreateDefaultContext()
+        )
+        self._optimization_plant_context = (
+            self._optimization_diagram.GetSubsystemContext(
+                self._optimization_plant, self._optimization_diagram_context
+            )
         )
         # =====================================================
 
@@ -275,10 +289,10 @@ class InternalStationDiagram(Diagram):
         builder.ExportInput(
             self._plant_updater.GetInputPort("iiwa.position"), "iiwa.position"
         )
-        if has_wsg:
-            builder.ExportInput(
-                self._plant_updater.GetInputPort("wsg.position"), "wsg.position"
-            )
+        # if has_wsg:
+        #     builder.ExportInput(
+        #         self._plant_updater.GetInputPort("wsg.position"), "wsg.position"
+        #     )
 
         # Export "cheat" ports
         builder.ExportOutput(self._scene_graph.get_query_output_port(), "query_object")
@@ -330,7 +344,6 @@ class IiwaHardwareStationDiagram(Diagram):
     def __init__(
         self,
         scenario: Scenario,
-        has_wsg: bool,
         use_hardware: bool,
         control_mode: Union[IiwaControlMode, str] = IiwaControlMode.kPositionOnly,
         create_point_clouds: bool = False,
@@ -339,9 +352,6 @@ class IiwaHardwareStationDiagram(Diagram):
         """
         Args:
             scenario (Scenario): The scenario to use. This must contain one iiwa.
-            has_wsg (bool): Whether the station has a WSG gripper. This gripper must be
-                part of the scenario. If false, then the iiwa controller plant will not
-                have a WSG gripper (tracking is less accurate if there is a mismatch).
             use_hardware (bool): Whether to use real world hardware.
             control_mode (Union[IiwaControlMode, str], optional): The control mode to
                 use. Must be one of "position_and_torque", "position_only", or
@@ -351,6 +361,9 @@ class IiwaHardwareStationDiagram(Diagram):
                 computational overhead.
         """
         super().__init__()
+
+        project_dir = Path(__file__).parent.parent
+        microscope_mount_file = project_dir / "models" / "microscope_mount.sdf"
 
         self._use_hardware = use_hardware
         if isinstance(control_mode, str):
@@ -368,7 +381,6 @@ class IiwaHardwareStationDiagram(Diagram):
             "internal_station",
             InternalStationDiagram(
                 scenario=scenario,
-                has_wsg=has_wsg,
                 package_xmls=package_xmls,
             ),
         )
@@ -400,25 +412,25 @@ class IiwaHardwareStationDiagram(Diagram):
             self._external_station.GetOutputPort("iiwa.position_measured"),
             self.internal_station.GetInputPort("iiwa.position"),
         )
-        if has_wsg:
-            wsg_state_demux: Demultiplexer = builder.AddSystem(Demultiplexer(2, 1))
-            builder.Connect(
-                self._external_station.GetOutputPort("wsg.state_measured"),
-                wsg_state_demux.get_input_port(),
-            )
-            # System for converting the distance between the fingers to the positions of
-            # the two finger joints
-            wsg_state_to_wsg_mbp_state = builder.AddNamedSystem(
-                "wsg_state_to_wsg_mbp_state", MatrixGain(np.array([-0.5, 0.5]))
-            )
-            builder.Connect(
-                wsg_state_demux.get_output_port(0),
-                wsg_state_to_wsg_mbp_state.get_input_port(),
-            )
-            builder.Connect(
-                wsg_state_to_wsg_mbp_state.get_output_port(),
-                self.internal_station.GetInputPort("wsg.position"),
-            )
+        # if has_wsg:
+        #     wsg_state_demux: Demultiplexer = builder.AddSystem(Demultiplexer(2, 1))
+        #     builder.Connect(
+        #         self._external_station.GetOutputPort("wsg.state_measured"),
+        #         wsg_state_demux.get_input_port(),
+        #     )
+        #     # System for converting the distance between the fingers to the positions of
+        #     # the two finger joints
+        #     wsg_state_to_wsg_mbp_state = builder.AddNamedSystem(
+        #         "wsg_state_to_wsg_mbp_state", MatrixGain(np.array([-0.5, 0.5]))
+        #     )
+        #     builder.Connect(
+        #         wsg_state_demux.get_output_port(0),
+        #         wsg_state_to_wsg_mbp_state.get_input_port(),
+        #     )
+        #     builder.Connect(
+        #         wsg_state_to_wsg_mbp_state.get_output_port(),
+        #         self.internal_station.GetInputPort("wsg.position"),
+        #     )
 
         # Export internal station ports
         exported_internal_station_port_names = [

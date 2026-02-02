@@ -1,0 +1,23 @@
+directives:
+- add_model:
+    name: iiwa
+    file: package://drake_models/iiwa_description/urdf/iiwa14_spheres_dense_collision.urdf
+    default_joint_positions:
+        iiwa_joint_1: [0]
+        iiwa_joint_2: [0.1]
+        iiwa_joint_3: [0]
+        iiwa_joint_4: [-1.2]
+        iiwa_joint_5: [0]
+        iiwa_joint_6: [1.6]
+        iiwa_joint_7: [0]
+- add_weld:
+    parent: world
+    child: iiwa::iiwa_link_0
+- add_model:
+    name: microscope_mount
+    file: package://iiwa_setup/microscope_mount.sdf
+- add_weld:
+    parent: iiwa::iiwa_link_7
+    child: microscope_mount::cylinder_link
+    X_PC:
+        translation: [0, -0.065, 0.045] # Set microscope tip location here

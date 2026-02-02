@@ -6,25 +6,23 @@ import numpy as np
 from manipulation.meshcat_utils import WsgButton
 from manipulation.scenarios import AddIiwaDifferentialIK
 from manipulation.station import LoadScenario
-
 from pydrake.all import (
     ApplySimulatorConfig,
+    CoulombFriction,
     DiagramBuilder,
+    InverseKinematics,
     JointSliders,
     MeshcatVisualizer,
+    MinimumDistanceLowerBoundConstraint,
     PiecewisePolynomial,
-    Simulator,
-    RigidTransform,
-    Sphere,
-    CoulombFriction,
     Rgba,
-    InverseKinematics,
-    SpatialInertia,
-    UnitInertia,
+    RigidTransform,
     SceneGraphCollisionChecker,
-    MinimumDistanceLowerBoundConstraint
+    Simulator,
+    SpatialInertia,
+    Sphere,
+    UnitInertia,
 )
-
 from pydrake.systems.drawing import plot_system_graphviz
 from pydrake.systems.primitives import FirstOrderLowPassFilter
 
@@ -33,8 +31,7 @@ from iiwa_setup.motion_planning.toppra import reparameterize_with_toppra
 
 
 def main(use_hardware: bool, has_wsg: bool) -> None:
-    scenario_data = (
-    """
+    scenario_data = """
     directives:
     - add_directives:
         file: package://iiwa_setup/iiwa14.dmd.yaml
@@ -59,8 +56,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         default:
             lcm_url: ""
     """
-    )
-    
+
     builder = DiagramBuilder()
 
     scenario = LoadScenario(data=scenario_data)
@@ -80,7 +76,6 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         )
     )
 
-
     # num_iiwa_joints = controller_plant.num_positions()
     # print("Number of iiwa joints:", num_iiwa_joints)
     # filter = builder.AddSystem(FirstOrderLowPassFilter(
@@ -91,7 +86,8 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
     # )
 
     builder.Connect(
-        teleop.get_output_port(), station.GetInputPort("iiwa.position"),
+        teleop.get_output_port(),
+        station.GetInputPort("iiwa.position"),
     )
 
     if has_wsg:
@@ -114,9 +110,7 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
     station.internal_meshcat.AddButton("Stop Simulation")
     station.internal_meshcat.AddButton("Move to Goal")
 
-    
-
-    q_goal = np.array([0, np.pi/2, 0.0, 0.0, 0.0, 0.0, 0.0])
+    q_goal = np.array([0, np.pi / 2, 0.0, 0.0, 0.0, 0.0, 0.0])
     vel_limits = np.full(7, 0.2)  # rad/s
     acc_limits = np.full(7, 0.2)  # rad/s^2
 
@@ -125,47 +119,49 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
         if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
             move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
             print(f"Moving to goal: {q_goal}")
-            
+
             # 1. Get current position
             # Get the real-time context for the station
             station_context = station.GetMyContextFromRoot(simulator.get_context())
             # Read the measured position from the station (works for both Sim and Hardware)
-            q_current = station.GetOutputPort("iiwa.position_measured").Eval(station_context)
+            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
+                station_context
+            )
             print("Current joint positions:", q_current)
-            
+
             # 2. Create geometric path
             path = PiecewisePolynomial.FirstOrderHold(
                 [0, 1], np.column_stack((q_current, q_goal))
             )
-            
+
             # 3. Parameterize with TOPPRA
             print("Generating trajectory...")
             traj = reparameterize_with_toppra(
                 path,
                 controller_plant,
                 velocity_limits=vel_limits,
-                acceleration_limits=acc_limits
+                acceleration_limits=acc_limits,
             )
             print(f"Trajectory duration: {traj.end_time():.2f}s")
-            
+
             # 4. Execute trajectory
             t_traj = 0.0
             dt = 0.01
             # Assuming 'simulator' is available here
             t_start = simulator.get_context().get_time()
-            
+
             while t_traj < traj.end_time():
                 # Get desired state
                 q_d = traj.value(t_traj).flatten()
-                
+
                 # Send command
                 teleop.SetPositions(q_d)
-                
+
                 # Advance simulation
                 step = min(dt, traj.end_time() - t_traj)
                 simulator.AdvanceTo(t_start + t_traj + step)
                 t_traj += step
-            
+
             print("Goal reached.")
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)

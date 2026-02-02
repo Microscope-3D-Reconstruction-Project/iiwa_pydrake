@@ -1,0 +1,629 @@
+"""
+Hemisphere scanning solver
+
+Authors: Roman Mineyev
+"""
+
+# Other
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from scipy.spatial.transform import Rotation
+from termcolor import colored
+
+# Drake
+from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
+
+# Personal files
+from scripts.kuka_geo_kin import KinematicsSolver
+
+
+class Node:
+    """
+    Node class
+
+    Args:
+        q (np.array): Joint configuration
+        pose (np.array): End-effector pose as transformation matrix
+        layer_idx (int): Index of the layer this node belongs to
+        node_idx (int): Index of the node within its layer
+    """
+
+    def __init__(
+        self, q, target_pos, eef_pos_distance, eef_rot_distance, layer_idx, node_idx
+    ):
+        # identification
+        self.layer_idx = layer_idx
+        self.node_idx = node_idx
+
+        # graph search attributes
+        self.cost = np.inf  # cumulative cost to reach node, used for Dijkstra's
+        self.prev = (
+            None  # previous node on best path, used for backtracking after Dijkstra's
+        )
+
+        # metrics
+        self.q = q  # joint configuration (numpy array)
+        self.target_pos = target_pos  # target end-effector position (numpy array)
+        self.eef_pos_distance = (
+            eef_pos_distance  # end-effector position distance from target
+        )
+        self.eef_rot_distance = (
+            eef_rot_distance  # end-effector rotation distance from target
+        )
+        self.manipulability = 0.0  # manipulability score at self.q configuration
+
+        # flags for debugging
+        self.is_in_self_collision = False
+        self.is_within_joint_limits = False
+        self.is_analytical_solution = False
+
+
+class SphereScorer:
+    def __init__(self):
+        # Weights for cost function
+        self.w_joint_dist = 1.0
+        self.w_eef_pos_dist = 1.0  # avg. pos dist. is roughly 0.051086 m
+        self.w_eef_rot_dist = 1.0  # avg. rot dist. is roughly 0.000139 rad
+        self.w_manipulability = -0.05  # manipulability score ranges from 0 to 1
+
+    # ===================================================================
+    # Cost function components
+    # ===================================================================
+    def edge_cost(self, prev_node, curr_node):
+        """
+        Cost of moving from prev_node to curr_node.
+        1. Joint distance: Distance between two joint configurations. We want to minimize large joint movements.
+        2. End-effector position distance: Curr node's end-effector distance from desired pose.
+        3. End-effector rotation distance: Curr node's end-effector rotation distance from desired pose.
+
+        Args
+            prev_node (Node): Starting node.
+            curr_node (Node): Ending node.
+
+        Returns:
+            cost (float): Cost of moving from prev_node to curr_node.
+        """
+
+        cost = (
+            self.w_joint_dist * self.joint_distance(prev_node, curr_node)
+            + self.w_eef_pos_dist * curr_node.eef_pos_distance
+            + self.w_eef_rot_dist * curr_node.eef_rot_distance
+            + self.w_manipulability * curr_node.manipulability
+        )
+
+        return cost
+
+    def eef_distances(self, target_pose, current_pose):
+        """
+        Compute distance of end-effector from desired pose (position + orientation).
+
+        Args:
+            target_pose (np.array): Target pose (position xyz + quaternion xyzw) [7,].
+            current_pose (np.array): Current end-effector pose (position xyz + quaternion xyzw) [7,].
+
+        Returns:
+            distance (float): Combined position and orientation distance.
+        """
+
+        # =========================== TODO: Check this function, I just used previous copilot without verifying ===========================
+
+        # Position distance
+        eef_distance_pos = current_pose[0:3] - target_pose[0:3]
+        eef_distance_pos = np.linalg.norm(eef_distance_pos)
+
+        # Orientation distance (both quaternions should be in xyzw format)
+        target_quat = target_pose[3:]  # xyzw format
+        target_rot = Rotation.from_quat(target_quat)
+        current_quat = current_pose[3:]  # xyzw format
+        current_rot = Rotation.from_quat(current_quat)
+
+        # Compute geodesic distance on SO(3)
+        R_error = current_rot.as_matrix().T @ target_rot.as_matrix()
+        trace = np.trace(R_error)
+
+        # Clip to avoid numerical issues with arccos
+        eef_angle_dist = np.arccos(np.clip((trace - 1) / 2, -1.0, 1.0))
+
+        return eef_distance_pos, eef_angle_dist
+
+    def joint_distance(self, node1, node2):
+        return np.linalg.norm(node2.q - node1.q)
+
+    def generate_graph(self, waypoints, num_elbow_angles=1):
+        # Get right arm joint positions for self-collision checking
+        full_joint_positions = robot_interface.get_full_joint_positions()
+        right_joint_positions = full_joint_positions[:7]
+
+        layers = []
+        max_manipulability = -np.inf
+
+        # Running averages for eef distances
+        total_eef_pos_dist = 0.0
+        total_eef_rot_dist = 0.0
+        num_configs = 0
+
+        for layer_idx, waypoint_set in enumerate(waypoints):
+            layer_nodes = []
+
+            for node_idx, target_pose in enumerate(waypoint_set):
+                # TODO: Compute all IK solutions for this waypoint
+                # TODO: Only include the IK solutions that are collision-free and within joint limits
+
+                target_pos = target_pose[0:3]
+                target_quat = target_pose[3:]
+                target_rot = T.quat2mat(target_quat)
+
+                target_pose_lb = (
+                    robot_interface.convert_global_pose_to_left_arm_base_pose(
+                        target_pos, target_rot
+                    )
+                )
+
+                (
+                    ik_sols,
+                    is_LS_vec,
+                ) = robot_interface.ik_manager.compute_left_arm_iks_from_num_elbow_angles(
+                    target_pos=target_pose_lb[:3, 3],
+                    target_rot=target_pose_lb[:3, :3],
+                    num_elbow_angles=num_elbow_angles,
+                    debug=False,
+                )
+
+                for sol_idx in range(ik_sols.shape[0]):
+                    q_sol = ik_sols[sol_idx, :]
+
+                    # Use forward kinematics to get end-effector pose given q_sol
+                    # print(colored("\n=== FK Debug: Tool vs Microscope positions ===", "magenta"))
+                    # print(f"Target position:             {target_pos}")
+                    (
+                        curr_pos,
+                        curr_quat,
+                    ) = robot_interface.ik_manager.compute_left_arm_fk(
+                        robot_interface.env, q_sol
+                    )
+
+                    curr_pose = np.concatenate((curr_pos, curr_quat))
+                    eef_pos_dist, eef_rot_dist = self.eef_distances(
+                        target_pose, curr_pose
+                    )
+
+                    # Debug: Print first waypoint errors
+                    if layer_idx == 0 and node_idx == 0 and sol_idx == 0:
+                        print(
+                            colored(
+                                "\n=== Debug: First waypoint IK/FK validation ===",
+                                "yellow",
+                            )
+                        )
+                        print(f"Target position: {target_pos}")
+                        print(f"FK position:     {curr_pos}")
+                        print(f"Position error:  {eef_pos_dist:.6f} m")
+                        print(
+                            f"Rotation error:  {eef_rot_dist:.6f} rad ({np.degrees(eef_rot_dist):.3f}°)"
+                        )
+                        print(
+                            colored(
+                                "==============================================\n",
+                                "yellow",
+                            )
+                        )
+
+                    node = Node(
+                        q=q_sol,
+                        target_pos=target_pos,
+                        eef_pos_distance=eef_pos_dist,
+                        eef_rot_distance=eef_rot_dist,
+                        layer_idx=layer_idx,
+                        node_idx=node_idx,
+                    )
+
+                    # Check if is analytical solution
+                    if not is_LS_vec[sol_idx]:
+                        node.is_analytical_solution = True
+
+                    # Check joint limits
+                    if self.within_joint_limits(q_sol):
+                        node.is_within_joint_limits = True
+
+                    # Check self-collision
+                    full_q_sol = np.concatenate((right_joint_positions, q_sol))
+                    is_in_self_collision = (
+                        robot_interface.safety_manager.collision_exists(
+                            robot_interface.env, full_q_sol
+                        )
+                    )
+                    if is_in_self_collision:
+                        node.is_in_self_collision = True
+
+                    # Add manipulability score
+                    node.manipulability = self.manipulability_score(q_sol)
+                    if node.manipulability > max_manipulability:
+                        max_manipulability = node.manipulability
+
+                    # Update running averages
+                    total_eef_pos_dist += eef_pos_dist
+                    total_eef_rot_dist += eef_rot_dist
+                    num_configs += 1
+
+                    layer_nodes.append(node)
+
+            # Filter out nodes as needed
+            total_sols = len(layer_nodes)
+            # Filter out joint limit violations
+            layer_nodes = [node for node in layer_nodes if node.is_within_joint_limits]
+            invalid_joint_limit_sols = total_sols - len(layer_nodes)
+            # # Filter out self-collisions
+            layer_nodes = [
+                node for node in layer_nodes if not node.is_in_self_collision
+            ]
+            num_self_collision_sols = (
+                total_sols - invalid_joint_limit_sols - len(layer_nodes)
+            )
+
+            # Cool visualization of total solutions vs. valid solutions
+            print(colored("Layer " + str(layer_idx) + " solutions breakdown:", "cyan"))
+            print(f"  Total IK solutions:                 {total_sols}")
+            print(f"  Invalid joint limit solutions:     -{invalid_joint_limit_sols}")
+            print(f"  Self-collision solutions:          -{num_self_collision_sols}")
+            print(f"                                    _____")
+            print(f"  Valid solutions remaining:         ={len(layer_nodes)}\n")
+            print(
+                "" + colored("==============================================\n", "cyan")
+            )
+
+            # Filter out invalid solutions
+            # layer_nodes = [node for node in layer_nodes if node.is_analytical_solution]
+
+            # Add big score for any layers with no valid IK solutions
+            if len(layer_nodes) == 0:
+                print(
+                    colored(
+                        "No valid IK solutions found for layer "
+                        + str(layer_idx)
+                        + ". Returning with high cost",
+                        "red",
+                    )
+                )
+                return [], None, None
+
+            layers.append(layer_nodes)
+
+        # Compute averages
+        avg_eef_pos_dist = total_eef_pos_dist / num_configs if num_configs > 0 else 0.0
+        avg_eef_rot_dist = total_eef_rot_dist / num_configs if num_configs > 0 else 0.0
+
+        return layers, avg_eef_pos_dist, avg_eef_rot_dist
+
+
+def generate_hemisphere_waypoints(center, radius, num_points, num_rotations):
+    """
+    Generate evenly distributed waypoints on a hemisphere using golden angle sampling.
+
+    This method uses the Fibonacci/golden angle spiral to distribute points uniformly
+    on the surface of a hemisphere (upper half of a sphere).
+
+    Args:
+        center (np.ndarray): Center of the hemisphere [x, y, z]
+        radius (float): Radius of the hemisphere in meters
+        num_points (int): Number of waypoints to generate
+        num_rotations (int): Number of rotated coordinate frames at each waypoint (rotated around surface normal)
+
+    Returns:
+        np.ndarray: Array of shape (num_points, num_rotations, 7) where the last dimension
+                    contains [x, y, z, qx, qy, qz, qw] for each waypoint
+    """
+
+    # Initialize 3D array: (num_points, num_rotations, 7)
+    waypoints_array = np.zeros((num_points, num_rotations, 7))
+
+    # Golden angle in radians
+    golden_angle = np.pi * (3.0 - np.sqrt(5.0))  # ≈ 2.399963 radians ≈ 137.508°
+
+    for i in range(num_points):
+        # Normalized height (1 to 0 for hemisphere, starting from top)
+        # Using sqrt for more uniform distribution
+        z_normalized = 1.0 - (i / (num_points - 1)) if num_points > 1 else 1.0
+
+        # Height on hemisphere (starts from radius, goes down to 0)
+        z = radius * z_normalized
+
+        # Radius at this height (circle radius decreases as we go up)
+        radius_at_height = radius * np.sqrt(1 - z_normalized**2)
+
+        # Angle using golden angle spiral
+        theta = golden_angle * i
+
+        # Convert to Cartesian coordinates
+        x = radius_at_height * np.cos(theta)
+        y = radius_at_height * np.sin(theta)
+
+        point = np.array([x, y, z])
+
+        # Compute coordinate frame at this point
+        # Z-axis: normal to sphere surface (pointing outward from center)
+        z_axis = (
+            point / np.linalg.norm(point)
+            if np.linalg.norm(point) > 1e-10
+            else np.array([0, 0, 1])
+        )
+
+        # X-axis: projection of [1,0,0] onto tangent plane
+        reference = np.array([1.0, 0.0, 0.0])
+
+        # Project reference vector onto tangent plane: v_proj = v - (v·n)n
+        x_axis = reference - np.dot(reference, z_axis) * z_axis
+        x_axis_norm = np.linalg.norm(x_axis)
+
+        # Handle singularity: when point is aligned with [1,0,0] or very close
+        if x_axis_norm < 1e-6:
+            # Use [0,1,0] as backup reference
+            reference = np.array([0.0, 1.0, 0.0])
+            x_axis = reference - np.dot(reference, z_axis) * z_axis
+            x_axis_norm = np.linalg.norm(x_axis)
+
+        x_axis = x_axis / x_axis_norm
+
+        # Y-axis: cross product to complete right-handed frame
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis = y_axis / np.linalg.norm(y_axis)  # Normalize for numerical stability
+
+        # Build rotation matrix [x_axis, y_axis, z_axis] as columns
+        base_rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
+
+        # Generate num_rotations coordinate frames by rotating around z_axis (surface normal)
+        for rot_idx in range(num_rotations):
+            # Compute rotation angle (evenly distributed)
+            rotation_angle = (
+                (2 * np.pi * rot_idx) / num_rotations if num_rotations > 1 else 0.0
+            )
+
+            # Create rotation matrix around z-axis
+            # R_z(θ) rotates the x and y axes while keeping z fixed
+            cos_angle = np.cos(rotation_angle)
+            sin_angle = np.sin(rotation_angle)
+            R_z = np.array(
+                [[cos_angle, -sin_angle, 0], [sin_angle, cos_angle, 0], [0, 0, 1]]
+            )
+
+            # Apply rotation in the local frame: R_rotated = R_base * R_z
+            rotation_matrix = base_rotation_matrix @ R_z
+
+            # Convert to quaternion [qx, qy, qz, qw]
+            rot = Rotation.from_matrix(rotation_matrix)
+            quat = rot.as_quat()  # Returns [qx, qy, qz, qw]
+
+            # Store in 3D array: [x, y, z, qx, qy, qz, qw]
+            point_global = point + center
+            waypoints_array[i, rot_idx, :3] = point_global
+            waypoints_array[i, rot_idx, 3:] = quat
+
+    return waypoints_array
+
+
+def plot_hemisphere_waypoints(
+    center, waypoints_array, radius, save_path, save_plot=True
+):
+    """
+    Plot waypoints with coordinate frames on a 3D hemisphere and optionally save the figure.
+
+    Args:
+        center (np.ndarray): Center of the hemisphere [x, y, z]
+        waypoints_array (np.ndarray): Array of shape (num_points, num_rotations, 7) containing
+                                       [x, y, z, qx, qy, qz, qw] for each waypoint
+        radius (float): Radius of the hemisphere
+        save_path (str or Path, optional): Path to save the plot image
+        save_plot (bool): Whether to save the plot to file
+    """
+    fig = plt.figure(figsize=(14, 12))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # Extract positions for plotting (flatten first two dimensions)
+    positions = waypoints_array[:, :, :3].reshape(-1, 3)
+
+    # Plot waypoints
+    ax.scatter(
+        positions[:, 0],
+        positions[:, 1],
+        positions[:, 2],
+        c="red",
+        marker="o",
+        s=30,
+        alpha=0.6,
+        label="Waypoints",
+    )
+
+    # Draw hemisphere surface (wireframe)
+    u = np.linspace(0, 2 * np.pi, 30)
+    v = np.linspace(0, np.pi / 2, 20)  # Only upper hemisphere
+    x_surf = radius * np.outer(np.cos(u), np.sin(v)) + center[0]
+    y_surf = radius * np.outer(np.sin(u), np.sin(v)) + center[1]
+    z_surf = radius * np.outer(np.ones(np.size(u)), np.cos(v)) + center[2]
+
+    ax.plot_surface(x_surf, y_surf, z_surf, alpha=0.15, color="lightblue")
+
+    # Draw base circle
+    theta_circle = np.linspace(0, 2 * np.pi, 100)
+    x_circle = radius * np.cos(theta_circle) + center[0]
+    y_circle = radius * np.sin(theta_circle) + center[1]
+    z_circle = np.zeros_like(theta_circle) + center[2]
+    ax.plot(
+        x_circle, y_circle, z_circle, "b--", linewidth=2, alpha=0.4, label="Base circle"
+    )
+
+    # Plot coordinate frames at waypoints
+    # For each unique position: show z-axis in blue (once) and all x-axes in red (one per rotation)
+    frame_scale = radius * 0.15  # Scale for coordinate frame axes
+
+    # Iterate through points (first dimension)
+    for i in range(waypoints_array.shape[0]):
+        # Get position (same for all rotations at this point)
+        point = waypoints_array[i, 0, :3]
+
+        # Plot z-axis once (it's the same for all rotations at this point)
+        first_quat = waypoints_array[i, 0, 3:]
+        rot = Rotation.from_quat(first_quat)
+        rotation_matrix = rot.as_matrix()
+        z_axis = rotation_matrix[:, 2]
+
+        ax.quiver(
+            point[0],
+            point[1],
+            point[2],
+            z_axis[0],
+            z_axis[1],
+            z_axis[2],
+            color="blue",
+            length=frame_scale,
+            arrow_length_ratio=0.3,
+            linewidth=2,
+            alpha=0.8,
+        )
+
+        # Plot x-axis for each rotation at this point
+        for j in range(waypoints_array.shape[1]):
+            quat = waypoints_array[i, j, 3:]
+            rot = Rotation.from_quat(quat)
+            rotation_matrix = rot.as_matrix()
+            x_axis = rotation_matrix[:, 0]
+
+            ax.quiver(
+                point[0],
+                point[1],
+                point[2],
+                x_axis[0],
+                x_axis[1],
+                x_axis[2],
+                color="red",
+                length=frame_scale,
+                arrow_length_ratio=0.3,
+                linewidth=1.5,
+                alpha=0.8,
+            )
+
+    # Add legend for coordinate frame axes
+    from matplotlib.lines import Line2D
+
+    legend_elements = [
+        Line2D(
+            [0],
+            [0],
+            color="red",
+            marker="o",
+            linestyle="None",
+            markersize=6,
+            label="Waypoints",
+        ),
+        Line2D([0], [0], color="b", linestyle="--", linewidth=2, label="Base circle"),
+        Line2D([0], [0], color="red", linewidth=2, label="X-axes (rotations)"),
+        Line2D([0], [0], color="blue", linewidth=2, label="Z-axis (normal)"),
+    ]
+
+    # Labels and title
+    ax.set_xlabel("X (m)", fontsize=12)
+    ax.set_ylabel("Y (m)", fontsize=12)
+    ax.set_zlabel("Z (m)", fontsize=12)
+    ax.set_title(
+        f"Hemisphere Waypoints with Coordinate Frames\n"
+        f"Golden Angle Sampling - Radius: {radius}m, Points: {len(positions)}",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    # Equal aspect ratio
+    max_range = radius * 1.2  # Add margin for frames
+    ax.set_xlim([-max_range + center[0], max_range + center[0]])
+    ax.set_ylim([-max_range + center[1], max_range + center[1]])
+    ax.set_zlim([center[2], max_range + center[2]])
+
+    # Set aspect ratio accounting for z being half the range of x and y
+    # x and y span 2*radius, z spans radius, so use [1, 1, 0.5]
+    ax.set_box_aspect([1, 1, 0.5])
+
+    ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    # Adjust viewing angle
+    ax.view_init(elev=20, azim=45)
+
+    plt.tight_layout()
+
+    # Save figure if path provided
+    if save_plot:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Plot saved to: {save_path.absolute()}")
+
+    plt.show()
+
+
+def generate_hemisphere_joint_poses(
+    station: IiwaHardwareStationDiagram,  # Station from hardware_station.py
+    center: np.ndarray,
+    radius: float,
+    num_poses: int,
+    num_rotations_per_pose: int,
+    num_elbow_positions: int,
+    kinematics_solver=None,
+):
+    """
+    Generate joint poses for scanning hemisphere, while optimizing these parameters:
+    """
+
+    # ===================================================================
+    # Params
+    # ===================================================================
+    save_plot = False
+
+    if kinematics_solver is None:
+        kinematics_solver = KinematicsSolver()
+
+    # ===================================================================
+    # Generate all waypoints on hemisphere
+    # ===================================================================
+    waypoints = generate_hemisphere_waypoints(
+        center, radius, num_poses, num_rotations_per_pose
+    )
+
+    if save_plot:
+        print("Generating plot...")
+        output_plot = (
+            Path(__file__).parent.parent / "outputs" / "hemisphere_waypoints.png"
+        )
+        plot_hemisphere_waypoints(
+            center, waypoints, radius, output_plot, save_plot=save_plot
+        )
+        print("Plot generation complete.")
+
+    # ===================================================================
+    # Create graph for evaluating least-cost path
+    # ===================================================================
+    # layers, avg_eef_pos_dist, avg_eef_rot_dist = self.generate_graph(
+    #     waypoints, robot_interface, num_elbow_positions=num_elbow_positions
+    # )
+
+    # ===================================================================
+    # Find least-cost path through graph
+    # ===================================================================
+
+    # ===================================================================
+    # Debugging
+    # ===================================================================
+
+    # # Test if IK solver can solve many values for first waypoint
+    # print("Testing IK solver for first waypoint...")
+
+    # # Get necessary values
+    # internal_plant = station.get_internal_plant()
+    # internal_sg = station.internal_station.get_scene_graph()
+    # context = station.internal_station.CreateDefaultContext()
+
+    # # Try solving IK for first waypoint
+    # q_sols = kinematics_solver.kuka_IK(
+
+    # )
+
+    # Test current robot location for self-collisions
