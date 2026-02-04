@@ -177,7 +177,6 @@ class SphereScorer:
         )
 
         # 3) Get detailed collision information
-        # from pydrake.all import SignedDistancePair
 
         # Get all penetration pairs (actual collisions)
         penetrations = query_object.ComputePointPairPenetration()
@@ -215,23 +214,18 @@ class SphereScorer:
             model_name_A = self.optimization_plant.GetModelInstanceName(model_A)
             model_name_B = self.optimization_plant.GetModelInstanceName(model_B)
 
-            print(f"  Model A: {model_name_A}, Model B: {model_name_B}")
+            # print(f"  Model A: {model_name_A}, Model B: {model_name_B}")
 
-            # Collision is true as long as it's not with sphere_collision
-            # sphere_collision is for later when doing trajectory planning around the sphere
-            # TODO: Might not be cleanest code. Might want to group collision objects into categories for better sorting
-            if ("iiwa" in model_name_A) and ("iiwa" in model_name_B):
-                pass
-            elif ("sphere_collision" in geom_name_A) or (
-                "sphere_collision" in geom_name_B
+            # if ("iiwa" in model_name_A) and ("iiwa" in model_name_B): # Ignore self
+            #     pass
+            if ("collision_sphere_collision" in geom_name_A) or (
+                "collision_sphere_collision" in geom_name_B
             ):
                 # print("  --> Ignoring collision with sphere_collision object.")
                 pass
             else:  # Any collision not with sphere_collision is considered valid
-                print("  --> Self-collision detected:", geom_name_A, geom_name_B)
                 has_collision = True
-
-        has_collision = query_object.HasCollisions()
+        # input()
         # 3) Visualize for sanity check
         self.optimization_diagram.ForcedPublish(self.optimization_diagram_context)
         return has_collision

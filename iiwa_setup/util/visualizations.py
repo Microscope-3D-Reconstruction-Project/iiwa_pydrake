@@ -18,26 +18,34 @@ def draw_sphere(meshcat, name, position, radius=0.01):
 
 
 # TODO: These are collisions as well so maybe don't just add into visualizations.py?
-def add_sphere_with_collision(plant, position, radius=0.01):
+def add_sphere(
+    plant,
+    position,
+    radius=0.01,
+    name="sphere",
+    color=[0.0, 1.0, 0.0, 0.2],
+    collision=True,
+):
     friction = CoulombFriction(static_friction=0.9, dynamic_friction=0.8)
     sphere_shape = Sphere(radius)
     X_WC = RigidTransform(np.array(position))
 
-    plant.RegisterCollisionGeometry(
-        plant.world_body(),
-        X_WC,
-        sphere_shape,
-        "sphere_collision",
-        friction,
-    )
+    if collision:
+        plant.RegisterCollisionGeometry(
+            plant.world_body(),
+            X_WC,
+            sphere_shape,
+            f"{name}_collision",
+            friction,
+        )
 
     # Optional: visualization
     plant.RegisterVisualGeometry(
         plant.world_body(),
         X_WC,
         sphere_shape,
-        "sphere_visual",
-        [0.0, 1.0, 0.0, 0.5],
+        f"{name}_visual",
+        color,
     )
 
 

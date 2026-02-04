@@ -48,11 +48,7 @@ from pydrake.all import (  # MeshcatVisualizer,
 )
 
 from iiwa_setup.util import get_package_xmls
-from iiwa_setup.util.visualizations import (
-    add_floor,
-    add_sphere_with_collision,
-    add_wall,
-)
+from iiwa_setup.util.visualizations import add_floor, add_sphere, add_wall
 
 
 class PlantUpdater(LeafSystem):
@@ -226,8 +222,24 @@ class InternalStationDiagram(Diagram):
         self.hemisphere_radius = hemisphere_radius
         add_floor(self._plant)
         add_wall(self._plant)
-        add_sphere_with_collision(
-            self._plant, position=self.hemisphere_pos, radius=self.hemisphere_radius
+
+        add_sphere(  # scanning sphere for visualization
+            self._plant,
+            name="scan_sphere",
+            position=self.hemisphere_pos,
+            radius=self.hemisphere_radius,
+            color=[0.0, 1.0, 0.0, 0.2],
+            collision=False,
+        )
+
+        leeway = 0.02
+        add_sphere(  # collision sphere within scan_sphere
+            self._plant,
+            name="collision_vis_sphere",
+            position=self.hemisphere_pos,
+            radius=self.hemisphere_radius - leeway,
+            color=[1.0, 0.0, 0.0, 0.2],
+            collision=False,
         )
 
         self._plant.Finalize()
@@ -291,11 +303,25 @@ class InternalStationDiagram(Diagram):
         # Add other world geometry (e.g., floor, wall, etc.)
         add_floor(self._optimization_plant)
         add_wall(self._optimization_plant)
-        add_sphere_with_collision(
+
+        # Add sphere to visualize scan points
+        add_sphere(
             self._optimization_plant,
+            name="scan_sphere",
             position=self.hemisphere_pos,
             radius=self.hemisphere_radius,
+            collision=False,
         )
+        leeway = 0.02
+        add_sphere(  # collision sphere within scan_sphere
+            self._optimization_plant,
+            name="collision_sphere",
+            position=self.hemisphere_pos,
+            radius=self.hemisphere_radius - leeway,
+            color=[1.0, 0.0, 0.0, 0.2],
+            collision=True,
+        )
+
         # Finalize the plant BEFORE building the diagram
         self._optimization_plant.Finalize()
 
@@ -388,6 +414,9 @@ class InternalStationDiagram(Diagram):
 
     def get_iiwa_controller_plant(self) -> MultibodyPlant:
         return self._iiwa_controller_plant
+
+    def get_internal_meshcat(self):
+        return self._internal_meshcat
 
     def get_scene_graph(self) -> SceneGraph:
         return self._scene_graph
@@ -541,6 +570,10 @@ class IiwaHardwareStationDiagram(Diagram):
     def get_internal_plant(self) -> MultibodyPlant:
         """Get the internal non-simulated plant."""
         return self.internal_station.get_plant()
+
+    def get_optimization_plant(self) -> MultibodyPlant:
+        """Get the internal optimization plant."""
+        return self.internal_station.get_optimization_plant()
 
     def get_internal_plant_context(self) -> Context:
         return self.internal_station.get_plant_context()

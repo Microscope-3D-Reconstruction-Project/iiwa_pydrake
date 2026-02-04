@@ -37,7 +37,12 @@ from pydrake.systems.primitives import FirstOrderLowPassFilter
 
 from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
 from iiwa_setup.motion_planning.toppra import reparameterize_with_toppra
-from iiwa_setup.util.traj_planning import compute_simple_traj_from_q1_to_q2
+from iiwa_setup.util.traj_planning import (
+    add_collision_constraints_to_trajectory,
+    compute_simple_traj_from_q1_to_q2,
+    resolve_with_toppra,
+    setup_trajectory_optimization_from_q1_to_q2,
+)
 from iiwa_setup.util.visualizations import draw_sphere
 
 # Personal files
@@ -100,10 +105,6 @@ def main(use_hardware: bool) -> None:
     internal_plant = station.get_internal_plant()
     controller_plant = station.get_iiwa_controller_plant()
 
-    # Frames
-    tip_frame = internal_plant.GetFrameByName("microscope_tip_link")
-    link7_frame = internal_plant.GetFrameByName("iiwa_link_7")
-
     # Load teleop sliders
     teleop = builder.AddSystem(
         JointSliders(
@@ -123,25 +124,6 @@ def main(use_hardware: bool) -> None:
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
-    # # Add coordinate frames
-    # AddFrameTriadIllustration(
-    #     scene_graph=station.internal_station.get_scene_graph(),
-    #     plant=internal_plant,
-    #     frame=tip_frame,
-    #     length=0.05,
-    #     radius=0.002,
-    #     name="microscope_tip_frame",
-    # )
-
-    # AddFrameTriadIllustration(
-    #     scene_graph=station.internal_station.get_scene_graph(),
-    #     plant=internal_plant,
-    #     frame=link7_frame,
-    #     length=0.1,
-    #     radius=0.002,
-    #     name="iiwa_link_7_frame",
-    # )
-
     # Build diagram
     diagram = builder.Build()
 
@@ -160,12 +142,12 @@ def main(use_hardware: bool) -> None:
     # Compute all joint poses for sphere scanning
     # ====================================================================
     # Solve example IK
-    draw_sphere(
-        station.internal_meshcat,
-        "target_sphere",
-        position=hemisphere_pos,
-        radius=hemisphere_radius,
-    )
+    # draw_sphere(
+    #     station.internal_meshcat,
+    #     "target_sphere",
+    #     position=hemisphere_pos,
+    #     radius=hemisphere_radius,
+    # )
 
     kinematics_solver = KinematicsSolver(station)
     _, path_joint_poses = generate_hemisphere_joint_poses(
@@ -178,19 +160,23 @@ def main(use_hardware: bool) -> None:
         kinematics_solver=kinematics_solver,
     )
 
-    # print("Generated joint poses for hemisphere scanning:")
-    # print(joint_poses)
-
-    # sphere_scorer = SphereScorer(station, kinematics_solver)
-
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
     move_clicks = 0
+    plan_clicks = 0
+    trajectory = None
+    execute_trajectory = False
+    trajectory_start_time = 0.0
     path_idx = 0
+    vel_limits = np.full(7, 1.0)  # rad/s
+    acc_limits = np.full(7, 1.0)  # rad/s^2
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
-        if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
-            move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
+        new_move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
+        new_plan_clicks = station.internal_meshcat.GetButtonClicks("Plan Trajectory")
+        if new_plan_clicks > plan_clicks:
+            plan_clicks = new_plan_clicks
+            print("Planning trajectory...")
 
             if path_idx >= len(path_joint_poses) - 1:
                 print("Completed all joint poses for hemisphere scanning.")
@@ -201,28 +187,78 @@ def main(use_hardware: bool) -> None:
                 station_context
             )
 
-            traj = compute_simple_traj_from_q1_to_q2(
-                controller_plant,
-                q_current,
-                path_joint_poses[path_idx],
-                vel_limits=np.full(7, 1.5),  # rad/s
-                acc_limits=np.full(7, 1.5),  # rad/s²
+            trajopt, prog = setup_trajectory_optimization_from_q1_to_q2(
+                station=station,
+                q1=q_current,
+                q2=path_joint_poses[path_idx],
+                duration_constraints=(0.5, 5.0),
+                num_control_points=10,
+                duration_cost=1.0,
+                path_length_cost=1.0,
+                visualize_solving=True,
             )
 
-            t_traj = 0.0
-            dt = 0.01
-            t_start = simulator.get_context().get_time()
+            # Solve for initial guess
+            result = Solve(prog)
+            if not result.is_success():
+                print("Trajectory optimization failed, even without collisions!")
+                print(result.get_solver_id().name())
+            trajopt.SetInitialGuess(trajopt.ReconstructTrajectory(result))
 
-            while t_traj < traj.end_time():
-                q_d = traj.value(t_traj).flatten()
-                teleop.SetPositions(q_d)
+            trajopt = add_collision_constraints_to_trajectory(
+                station,
+                trajopt,
+            )
 
-                step = min(dt, traj.end_time() - t_traj)
-                simulator.AdvanceTo(t_start + t_traj + step)
-                t_traj += step
+            # Solve for trajectory with collision avoidance
+            result = Solve(prog)
+            if not result.is_success():
+                print("Trajectory optimization failed")
+                print(result.get_solver_id().name())
+                continue
+
+            print("Trajectory optimization succeeded!")
+
+            trajectory = resolve_with_toppra(
+                station,
+                trajopt,
+                result,
+                vel_limits,
+                acc_limits,
+            )
+
+            print(
+                f"✓ TOPPRA succeeded! Trajectory duration: {trajectory.end_time():.2f}s"
+            )
 
             path_idx += 1
-            print(f"Moved to pose {path_idx} of {len(path_joint_poses)}.")
+
+        # If we have a trajectory, execute it
+        if new_move_clicks > move_clicks:  # Triggered when Move to Goal is pressed
+            move_clicks = new_move_clicks
+            if trajectory is None:
+                print("No trajectory planned yet!")
+            else:
+                print("Executing trajectory...")
+                execute_trajectory = True
+                trajectory_start_time = simulator.get_context().get_time()
+
+        if execute_trajectory:
+            current_time = simulator.get_context().get_time()
+            traj_time = current_time - trajectory_start_time
+
+            if traj_time <= trajectory.end_time():
+                q_desired = trajectory.value(traj_time)
+                station_context = station.GetMyMutableContextFromRoot(
+                    simulator.get_mutable_context()
+                )
+                station.GetInputPort("iiwa.position").FixValue(
+                    station_context, q_desired
+                )
+            else:
+                print("✓ Trajectory execution complete!")
+                trajectory = None
+                execute_trajectory = False
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 
