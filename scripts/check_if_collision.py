@@ -48,6 +48,13 @@ from scripts.hemisphere_solver import (
 )
 from scripts.kuka_geo_kin import KinematicsSolver
 
+"""
+Run this file to manually check for collision at different joint poses.
+1) Use joint sliders to move the robot.
+2) Press "Check Collision" button to see if the current pose is in collision.
+    a) The optimization MeshCat will visualize the robot pose for you to see for you to check if there is a collision (localhost:7001 at the time of me testing this)
+"""
+
 
 def main(use_hardware: bool) -> None:
     scenario_data = """
@@ -83,16 +90,9 @@ def main(use_hardware: bool) -> None:
 
     # Load scenario
     scenario = LoadScenario(data=scenario_data)
-    hemisphere_pos = np.array([0.6666666, 0.0, 0.444444])
-    hemisphere_radius = 0.05
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
-        IiwaHardwareStationDiagram(
-            scenario=scenario,
-            hemisphere_pos=hemisphere_pos,
-            hemisphere_radius=hemisphere_radius,
-            use_hardware=use_hardware,
-        ),
+        IiwaHardwareStationDiagram(scenario=scenario, use_hardware=use_hardware),
     )
 
     # Load all values I use later
@@ -123,25 +123,6 @@ def main(use_hardware: bool) -> None:
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
-    # # Add coordinate frames
-    # AddFrameTriadIllustration(
-    #     scene_graph=station.internal_station.get_scene_graph(),
-    #     plant=internal_plant,
-    #     frame=tip_frame,
-    #     length=0.05,
-    #     radius=0.002,
-    #     name="microscope_tip_frame",
-    # )
-
-    # AddFrameTriadIllustration(
-    #     scene_graph=station.internal_station.get_scene_graph(),
-    #     plant=internal_plant,
-    #     frame=link7_frame,
-    #     length=0.1,
-    #     radius=0.002,
-    #     name="iiwa_link_7_frame",
-    # )
-
     # Build diagram
     diagram = builder.Build()
 
@@ -153,13 +134,14 @@ def main(use_hardware: bool) -> None:
     simulator.set_target_realtime_rate(1.0)
 
     station.internal_meshcat.AddButton("Stop Simulation")
-    station.internal_meshcat.AddButton("Plan Trajectory")
-    station.internal_meshcat.AddButton("Move to Goal")
+    station.internal_meshcat.AddButton("Check Collision")
 
     # ====================================================================
     # Compute all joint poses for sphere scanning
     # ====================================================================
     # Solve example IK
+    hemisphere_pos = np.array([0.6666666, 0.0, 0.444444])
+    hemisphere_radius = 0.05
     draw_sphere(
         station.internal_meshcat,
         "target_sphere",
@@ -168,67 +150,35 @@ def main(use_hardware: bool) -> None:
     )
 
     kinematics_solver = KinematicsSolver(station)
-    _, path_joint_poses = generate_hemisphere_joint_poses(
-        station=station,
-        center=hemisphere_pos,
-        radius=hemisphere_radius,
-        num_poses=30,
-        num_rotations_per_pose=7,
-        num_elbow_positions=10,
-        kinematics_solver=kinematics_solver,
-    )
-
-    # print("Generated joint poses for hemisphere scanning:")
-    # print(joint_poses)
-
-    # sphere_scorer = SphereScorer(station, kinematics_solver)
+    sphere_scorer = SphereScorer(station, kinematics_solver)
 
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
-    move_clicks = 0
+    collision_clicks = 0
     path_idx = 0
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
-        if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
-            move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
-
-            if path_idx >= len(path_joint_poses) - 1:
-                print("Completed all joint poses for hemisphere scanning.")
-                continue
-
-            station_context = station.GetMyContextFromRoot(simulator.get_context())
-            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
-                station_context
+        if (
+            station.internal_meshcat.GetButtonClicks("Check Collision")
+            > collision_clicks
+        ):
+            collision_clicks = station.internal_meshcat.GetButtonClicks(
+                "Check Collision"
             )
 
-            traj = compute_simple_traj_from_q1_to_q2(
-                controller_plant,
-                q_current,
-                path_joint_poses[path_idx],
-                vel_limits=np.full(7, 1.5),  # rad/s
-                acc_limits=np.full(7, 1.5),  # rad/s²
-            )
+            # Get values of teleop sliders, not the hardware
+            context = simulator.get_context()
+            teleop_context = teleop.GetMyContextFromRoot(context)
+            q = teleop.get_output_port().Eval(teleop_context)
 
-            t_traj = 0.0
-            dt = 0.01
-            t_start = simulator.get_context().get_time()
-
-            while t_traj < traj.end_time():
-                q_d = traj.value(t_traj).flatten()
-                teleop.SetPositions(q_d)
-
-                step = min(dt, traj.end_time() - t_traj)
-                simulator.AdvanceTo(t_start + t_traj + step)
-                t_traj += step
-
-            path_idx += 1
-            print(f"Moved to pose {path_idx} of {len(path_joint_poses)}.")
+            print("Checking collision at q:", q)
+            sphere_scorer.is_in_self_collision(q)
+            # print("Is there a collision?", sphere_scorer.is_in_self_collision(q))
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 
     station.internal_meshcat.DeleteButton("Stop Simulation")
-    station.internal_meshcat.DeleteButton("Plan Trajectory")
-    station.internal_meshcat.DeleteButton("Move to Goal")
+    station.internal_meshcat.DeleteButton("Check Collision")
 
 
 if __name__ == "__main__":

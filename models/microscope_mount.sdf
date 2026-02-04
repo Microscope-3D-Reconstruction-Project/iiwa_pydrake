@@ -4,11 +4,11 @@
     <static>false</static>
 
     <!-- Link representing the cylinder -->
-    <link name="cylinder_link">
+    <link name="microscope_cylinder_link">
       <pose>0 0 0 0 0 0</pose>
 
       <!-- Collision geometry -->
-      <collision name="cylinder_collision">
+      <collision name="microscope_cylinder_collision">
         <geometry>
           <cylinder>
             <radius>0.01</radius>
@@ -18,7 +18,7 @@
       </collision>
 
       <!-- Visual geometry -->
-      <visual name="cylinder_visual">
+      <visual name="microscope_cylinder_visual">
         <geometry>
           <cylinder>
             <radius>0.01</radius>
@@ -85,7 +85,7 @@
     </link>
 
     <joint name="fixed_tip" type="fixed">
-      <parent>cylinder_link</parent>
+      <parent>microscope_cylinder_link</parent>
       <child>microscope_tip_link</child>
     </joint>
   </model>

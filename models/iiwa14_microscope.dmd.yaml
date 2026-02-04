@@ -18,6 +18,6 @@ directives:
     file: package://iiwa_setup/microscope_mount.sdf
 - add_weld:
     parent: iiwa::iiwa_link_7
-    child: microscope_mount::cylinder_link
+    child: microscope_mount::microscope_cylinder_link
     X_PC:
         translation: [0, -0.065, 0.045] # Set microscope tip location here

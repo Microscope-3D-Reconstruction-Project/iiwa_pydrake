@@ -17,12 +17,15 @@ from pydrake.all import (  # MeshcatVisualizer,
     AbstractValue,
     AddMultibodyPlantSceneGraph,
     BasicVector,
+    Box,
     CollisionFilterDeclaration,
     Context,
+    CoulombFriction,
     Demultiplexer,
     Diagram,
     DiagramBuilder,
     GeometrySet,
+    HalfSpace,
     IiwaControlMode,
     LeafSystem,
     MatrixGain,
@@ -45,6 +48,11 @@ from pydrake.all import (  # MeshcatVisualizer,
 )
 
 from iiwa_setup.util import get_package_xmls
+from iiwa_setup.util.visualizations import (
+    add_floor,
+    add_sphere_with_collision,
+    add_wall,
+)
 
 
 class PlantUpdater(LeafSystem):
@@ -188,7 +196,8 @@ class InternalStationDiagram(Diagram):
     def __init__(
         self,
         scenario: Scenario,
-        # has_wsg: bool,
+        hemisphere_pos: np.ndarray = None,
+        hemisphere_radius: float = None,
         package_xmls: List[str] = [],
     ):
         super().__init__()
@@ -210,6 +219,15 @@ class InternalStationDiagram(Diagram):
         _ = ProcessModelDirectives(
             directives=ModelDirectives(directives=scenario.directives),
             parser=parser,
+        )
+
+        # Add other world geometry (e.g., floor, wall, etc.)
+        self.hemisphere_pos = hemisphere_pos
+        self.hemisphere_radius = hemisphere_radius
+        add_floor(self._plant)
+        add_wall(self._plant)
+        add_sphere_with_collision(
+            self._plant, position=self.hemisphere_pos, radius=self.hemisphere_radius
         )
 
         self._plant.Finalize()
@@ -270,6 +288,14 @@ class InternalStationDiagram(Diagram):
             parser=opt_parser,
         )
 
+        # Add other world geometry (e.g., floor, wall, etc.)
+        add_floor(self._optimization_plant)
+        add_wall(self._optimization_plant)
+        add_sphere_with_collision(
+            self._optimization_plant,
+            position=self.hemisphere_pos,
+            radius=self.hemisphere_radius,
+        )
         # Finalize the plant BEFORE building the diagram
         self._optimization_plant.Finalize()
 
@@ -378,6 +404,8 @@ class IiwaHardwareStationDiagram(Diagram):
         self,
         scenario: Scenario,
         use_hardware: bool,
+        hemisphere_pos: np.ndarray = None,
+        hemisphere_radius: float = None,
         control_mode: Union[IiwaControlMode, str] = IiwaControlMode.kPositionOnly,
         create_point_clouds: bool = False,
         package_xmls: List[str] = [],
@@ -394,6 +422,14 @@ class IiwaHardwareStationDiagram(Diagram):
                 computational overhead.
         """
         super().__init__()
+
+        if hemisphere_pos is None:
+            hemisphere_pos = np.array([0.6666666, 0.0, 0.444444])
+        if hemisphere_radius is None:
+            hemisphere_radius = 0.05
+
+        self.hemisphere_pos = hemisphere_pos
+        self.hemisphere_radius = hemisphere_radius
 
         self._use_hardware = use_hardware
         if isinstance(control_mode, str):
@@ -412,6 +448,8 @@ class IiwaHardwareStationDiagram(Diagram):
             InternalStationDiagram(
                 scenario=scenario,
                 package_xmls=package_xmls,
+                hemisphere_pos=self.hemisphere_pos,
+                hemisphere_radius=self.hemisphere_radius,
             ),
         )
         self.internal_scene_graph = self.internal_station.get_scene_graph()
@@ -443,25 +481,6 @@ class IiwaHardwareStationDiagram(Diagram):
             self._external_station.GetOutputPort("iiwa.position_measured"),
             self.internal_station.GetInputPort("iiwa.position"),
         )
-        # if has_wsg:
-        #     wsg_state_demux: Demultiplexer = builder.AddSystem(Demultiplexer(2, 1))
-        #     builder.Connect(
-        #         self._external_station.GetOutputPort("wsg.state_measured"),
-        #         wsg_state_demux.get_input_port(),
-        #     )
-        #     # System for converting the distance between the fingers to the positions of
-        #     # the two finger joints
-        #     wsg_state_to_wsg_mbp_state = builder.AddNamedSystem(
-        #         "wsg_state_to_wsg_mbp_state", MatrixGain(np.array([-0.5, 0.5]))
-        #     )
-        #     builder.Connect(
-        #         wsg_state_demux.get_output_port(0),
-        #         wsg_state_to_wsg_mbp_state.get_input_port(),
-        #     )
-        #     builder.Connect(
-        #         wsg_state_to_wsg_mbp_state.get_output_port(),
-        #         self.internal_station.GetInputPort("wsg.position"),
-        #     )
 
         # Export internal station ports
         exported_internal_station_port_names = [
@@ -497,25 +516,25 @@ class IiwaHardwareStationDiagram(Diagram):
             name = port.get_name()
             if name not in exported_internal_station_port_names:
                 builder.ExportOutput(port, name)
-        if (
-            len(scenario.cameras.items()) > 0
-            and create_point_clouds
-            and not use_hardware
-        ):
-            # TODO: Remove plant dependency from AddPointClouds to allow using it with
-            # hardware
-            depth_img_to_pcd_systems = AddPointClouds(
-                scenario=scenario,
-                station=self._external_station,
-                builder=builder,
-                meshcat=self.external_meshcat,
-            )
-            for _, camera_config in scenario.cameras.items():
-                name = camera_config.name
-                builder.ExportOutput(
-                    depth_img_to_pcd_systems[name].point_cloud_output_port(),
-                    f"{name}.point_cloud",
-                )
+        # if (
+        #     len(scenario.cameras.items()) > 0
+        #     and create_point_clouds
+        #     and not use_hardware
+        # ):
+        #     # TODO: Remove plant dependency from AddPointClouds to allow using it with
+        #     # hardware
+        #     depth_img_to_pcd_systems = AddPointClouds(
+        #         scenario=scenario,
+        #         station=self._external_station,
+        #         builder=builder,
+        #         meshcat=self.external_meshcat,
+        #     )
+        #     for _, camera_config in scenario.cameras.items():
+        #         name = camera_config.name
+        #         builder.ExportOutput(
+        #             depth_img_to_pcd_systems[name].point_cloud_output_port(),
+        #             f"{name}.point_cloud",
+        #         )
 
         builder.BuildInto(self)
 

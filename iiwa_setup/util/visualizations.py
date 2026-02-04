@@ -1,6 +1,6 @@
 import numpy as np
 
-from pydrake.all import Rgba, RigidTransform, Sphere
+from pydrake.all import Box, CoulombFriction, Rgba, RigidTransform, Sphere
 
 
 def draw_sphere(meshcat, name, position, radius=0.01):
@@ -14,4 +14,80 @@ def draw_sphere(meshcat, name, position, radius=0.01):
     meshcat.SetTransform(
         name,
         RigidTransform(np.array(position)),
+    )
+
+
+# TODO: These are collisions as well so maybe don't just add into visualizations.py?
+def add_sphere_with_collision(plant, position, radius=0.01):
+    friction = CoulombFriction(static_friction=0.9, dynamic_friction=0.8)
+    sphere_shape = Sphere(radius)
+    X_WC = RigidTransform(np.array(position))
+
+    plant.RegisterCollisionGeometry(
+        plant.world_body(),
+        X_WC,
+        sphere_shape,
+        "sphere_collision",
+        friction,
+    )
+
+    # Optional: visualization
+    plant.RegisterVisualGeometry(
+        plant.world_body(),
+        X_WC,
+        sphere_shape,
+        "sphere_visual",
+        [0.0, 1.0, 0.0, 0.5],
+    )
+
+
+def add_floor(plant):
+    friction = CoulombFriction(static_friction=0.9, dynamic_friction=0.8)
+    floor_thickness = 0.05
+    floor_length = 1.5 + 0.3  # extra to extend beyond robot base to the wall
+    floor_size = Box(floor_length, 3.0, floor_thickness)
+    X_WF = RigidTransform(
+        [floor_length / 2 - 0.3, 0, -floor_thickness / 2]
+    )  # top surface at z=0
+
+    plant.RegisterCollisionGeometry(
+        plant.world_body(),
+        X_WF,
+        floor_size,
+        "floor_collision",
+        friction,
+    )
+
+    # Optional: visualization
+    plant.RegisterVisualGeometry(
+        plant.world_body(),
+        X_WF,
+        floor_size,
+        "floor_visual",
+        [58 / 255.0, 85 / 255.0, 69 / 255.0, 1.0],
+    )
+
+
+def add_wall(plant):
+    friction = CoulombFriction(static_friction=0.9, dynamic_friction=0.8)
+    wall_thickness = 0.01
+    wall_height = 1.5
+    wall_size = Box(wall_thickness, 3.0, wall_height)
+    X_WF = RigidTransform([-0.3 - wall_thickness / 2, 0, wall_height / 2])
+
+    plant.RegisterCollisionGeometry(
+        plant.world_body(),
+        X_WF,
+        wall_size,
+        "wall_collision",
+        friction,
+    )
+
+    # Optional: visualization
+    plant.RegisterVisualGeometry(
+        plant.world_body(),
+        X_WF,
+        wall_size,
+        "wall_visual",
+        [58 / 255.0, 85 / 255.0, 69 / 255.0, 1.0],
     )

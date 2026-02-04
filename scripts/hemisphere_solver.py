@@ -76,12 +76,6 @@ class SphereScorer:
         # All Drake station components
         self.station = station
         self.internal_station = self.station.internal_station
-        # self.internal_plant = station.get_internal_plant()
-        # self.plant_context = station.get_internal_plant_context()
-        # self.internal_sg = self.internal_plant.get_scene_graph()
-
-        # internal_station_diagram_context = self.station.internal_station.CreateDefaultContext()
-        # scene_graph_context = self.internal_sg.GetMyContextFromRoot(internal_station_diagram_context)
 
         self.optimization_plant = self.internal_station.get_optimization_plant()
         self.optimization_plant_context = (
@@ -97,11 +91,6 @@ class SphereScorer:
         self.optimization_diagram_sg_context = (
             self.internal_station.get_optimization_diagram_sg_context()
         )
-
-        # Internal station
-        # self.internal_diagram_context = self.station.internal_station.CreateDefaultContext()
-        # self.internal_plant_updater = self.station.internal_station.GetSubsystemByName("plant_updater")
-        # self.updater_context = self.station.internal_station.get_plant_context()
 
         # Frame
         self.tip_frame = self.optimization_plant.GetFrameByName("microscope_tip_link")
@@ -174,22 +163,9 @@ class SphereScorer:
         return np.linalg.norm(node2.q - node1.q)
 
     def is_within_joint_limits(self, q):
-        # print("Joint limits check:")
-        # print(" lower limits:", self.joint_lower_limits)
-        # print(" upper limits:", self.joint_upper_limits)
-        # print(" current q:", q)
         is_within = np.all(q >= self.joint_lower_limits) and np.all(
             q <= self.joint_upper_limits
         )
-        # print(" within limits:", is_within)
-        # # if not, print which joint(s) are not within limits
-        # if not is_within:
-        #     for i in range(len(q)):
-        #         if q[i] < self.joint_lower_limits[i]:
-        #             print(f" Joint {i+1} below lower limit: {q[i]:.4f} < {self.joint_lower_limits[i]:.4f}")
-        #         if q[i] > self.joint_upper_limits[i]:
-        #             print(f" Joint {i+1} above upper limit: {q[i]:.4f} > {self.joint_upper_limits[i]:.4f}")
-        # # input()
         return is_within
 
     def is_in_self_collision(self, q):
@@ -199,15 +175,65 @@ class SphereScorer:
         query_object = self.optimization_diagram_sg.get_query_output_port().Eval(
             self.optimization_diagram_sg_context
         )
+
+        # 3) Get detailed collision information
+        # from pydrake.all import SignedDistancePair
+
+        # Get all penetration pairs (actual collisions)
+        penetrations = query_object.ComputePointPairPenetration()
+
+        # Inspect each collision pair
+        has_collision = False
+        for penetration in penetrations:
+            # Get geometry IDs
+            geom_id_A = penetration.id_A
+            geom_id_B = penetration.id_B
+
+            # Get inspector to query geometry properties
+            inspector = query_object.inspector()
+
+            # Get frame IDs (which correspond to bodies)
+            frame_id_A = inspector.GetFrameId(geom_id_A)
+            frame_id_B = inspector.GetFrameId(geom_id_B)
+
+            # Get geometry names to distinguish between different world objects
+            geom_name_A = inspector.GetName(geom_id_A)
+            geom_name_B = inspector.GetName(geom_id_B)
+
+            # Get body names
+            body_A = self.optimization_plant.GetBodyFromFrameId(frame_id_A)
+            body_B = self.optimization_plant.GetBodyFromFrameId(frame_id_B)
+
+            # print(f"Collision between: {body_A.name()} and {body_B.name()}")
+            # print(f"  Geometry A: {geom_name_A}, Geometry B: {geom_name_B}")
+            # print(f"  Penetration depth: {penetration.depth}")
+
+            # Check if this is self-collision (both bodies belong to iiwa)
+            model_A = body_A.model_instance()
+            model_B = body_B.model_instance()
+
+            model_name_A = self.optimization_plant.GetModelInstanceName(model_A)
+            model_name_B = self.optimization_plant.GetModelInstanceName(model_B)
+
+            print(f"  Model A: {model_name_A}, Model B: {model_name_B}")
+
+            # Collision is true as long as it's not with sphere_collision
+            # sphere_collision is for later when doing trajectory planning around the sphere
+            # TODO: Might not be cleanest code. Might want to group collision objects into categories for better sorting
+            if ("iiwa" in model_name_A) and ("iiwa" in model_name_B):
+                pass
+            elif ("sphere_collision" in geom_name_A) or (
+                "sphere_collision" in geom_name_B
+            ):
+                # print("  --> Ignoring collision with sphere_collision object.")
+                pass
+            else:  # Any collision not with sphere_collision is considered valid
+                print("  --> Self-collision detected:", geom_name_A, geom_name_B)
+                has_collision = True
+
         has_collision = query_object.HasCollisions()
         # 3) Visualize for sanity check
-
         self.optimization_diagram.ForcedPublish(self.optimization_diagram_context)
-        # print(f"Visualizing q: {q}")
-        # print(f"Collision: {has_collision}")
-        # time.sleep(0.01)  # Pause to let you see it
-
-        # print("Is there a collision?", has_collision)
         return has_collision
 
     def djikstra_search(self, layers):
@@ -234,7 +260,7 @@ class SphereScorer:
         path = []
         current_node = best_end_node
         while current_node is not None:
-            path.append(current_node)
+            path.append(current_node.q)
             current_node = current_node.prev
         path.reverse()
 

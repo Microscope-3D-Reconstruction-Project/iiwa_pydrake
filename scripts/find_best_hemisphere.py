@@ -83,16 +83,9 @@ def main(use_hardware: bool) -> None:
 
     # Load scenario
     scenario = LoadScenario(data=scenario_data)
-    hemisphere_pos = np.array([0.6666666, 0.0, 0.444444])
-    hemisphere_radius = 0.05
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
-        IiwaHardwareStationDiagram(
-            scenario=scenario,
-            hemisphere_pos=hemisphere_pos,
-            hemisphere_radius=hemisphere_radius,
-            use_hardware=use_hardware,
-        ),
+        IiwaHardwareStationDiagram(scenario=scenario, use_hardware=use_hardware),
     )
 
     # Load all values I use later
@@ -123,24 +116,24 @@ def main(use_hardware: bool) -> None:
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
-    # # Add coordinate frames
-    # AddFrameTriadIllustration(
-    #     scene_graph=station.internal_station.get_scene_graph(),
-    #     plant=internal_plant,
-    #     frame=tip_frame,
-    #     length=0.05,
-    #     radius=0.002,
-    #     name="microscope_tip_frame",
-    # )
+    # Add coordinate frames
+    AddFrameTriadIllustration(
+        scene_graph=station.internal_station.get_scene_graph(),
+        plant=internal_plant,
+        frame=tip_frame,
+        length=0.05,
+        radius=0.002,
+        name="microscope_tip_frame",
+    )
 
-    # AddFrameTriadIllustration(
-    #     scene_graph=station.internal_station.get_scene_graph(),
-    #     plant=internal_plant,
-    #     frame=link7_frame,
-    #     length=0.1,
-    #     radius=0.002,
-    #     name="iiwa_link_7_frame",
-    # )
+    AddFrameTriadIllustration(
+        scene_graph=station.internal_station.get_scene_graph(),
+        plant=internal_plant,
+        frame=link7_frame,
+        length=0.1,
+        radius=0.002,
+        name="iiwa_link_7_frame",
+    )
 
     # Build diagram
     diagram = builder.Build()
@@ -159,70 +152,50 @@ def main(use_hardware: bool) -> None:
     # ====================================================================
     # Compute all joint poses for sphere scanning
     # ====================================================================
-    # Solve example IK
-    draw_sphere(
-        station.internal_meshcat,
-        "target_sphere",
-        position=hemisphere_pos,
-        radius=hemisphere_radius,
-    )
-
     kinematics_solver = KinematicsSolver(station)
-    _, path_joint_poses = generate_hemisphere_joint_poses(
+
+    hemisphere_centers = []
+    hemisphere_radius = 0.05
+    point_density = 10
+
+    x_points = np.linspace(0, 1.0, point_density)
+    y_points = np.array([0])
+    z_points = np.linspace(0.0, 1.0, point_density)
+    hemisphere_centers = []
+    for x in x_points:
+        for y in y_points:
+            for z in z_points:
+                hemisphere_centers.append(np.array([x, y, z]))
+
+    find_best_hemisphere_center(
         station=station,
-        center=hemisphere_pos,
+        hemisphere_centers=hemisphere_centers,
         radius=hemisphere_radius,
         num_poses=30,
         num_rotations_per_pose=7,
         num_elbow_positions=10,
         kinematics_solver=kinematics_solver,
     )
-
-    # print("Generated joint poses for hemisphere scanning:")
-    # print(joint_poses)
-
     # sphere_scorer = SphereScorer(station, kinematics_solver)
 
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
     move_clicks = 0
-    path_idx = 0
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
         if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
             move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
 
-            if path_idx >= len(path_joint_poses) - 1:
-                print("Completed all joint poses for hemisphere scanning.")
-                continue
+            # test if self-collision
+            # Get current q through teleop values
+            # teleop_context = diagram.GetSubsystemContext(
+            #     teleop, simulator.get_context()
+            # )
+            # q_current = teleop.get_output_port().Eval(teleop_context)
+            # print("Current joint positions:", q_current)
 
-            station_context = station.GetMyContextFromRoot(simulator.get_context())
-            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
-                station_context
-            )
-
-            traj = compute_simple_traj_from_q1_to_q2(
-                controller_plant,
-                q_current,
-                path_joint_poses[path_idx],
-                vel_limits=np.full(7, 1.5),  # rad/s
-                acc_limits=np.full(7, 1.5),  # rad/s²
-            )
-
-            t_traj = 0.0
-            dt = 0.01
-            t_start = simulator.get_context().get_time()
-
-            while t_traj < traj.end_time():
-                q_d = traj.value(t_traj).flatten()
-                teleop.SetPositions(q_d)
-
-                step = min(dt, traj.end_time() - t_traj)
-                simulator.AdvanceTo(t_start + t_traj + step)
-                t_traj += step
-
-            path_idx += 1
-            print(f"Moved to pose {path_idx} of {len(path_joint_poses)}.")
+            # collision = sphere_scorer.is_in_self_collision(q_current)
+            # print("Self-collision:", collision)
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 
