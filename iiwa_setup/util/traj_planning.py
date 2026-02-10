@@ -1,3 +1,7 @@
+import os
+
+from pathlib import Path
+
 import numpy as np
 
 from pydrake.all import (
@@ -37,6 +41,8 @@ def setup_trajectory_optimization_from_q1_to_q2(
     station,
     q1: np.ndarray,
     q2: np.ndarray,
+    vel_limits: np.ndarray,
+    acc_limits: np.ndarray,  # Not used currently
     duration_constraints: tuple[float, float],
     num_control_points: int = 10,
     duration_cost: float = 1.0,
@@ -47,6 +53,9 @@ def setup_trajectory_optimization_from_q1_to_q2(
     internal_plant = station.get_internal_plant()
     internal_context = station.get_internal_plant_context()
     num_q = optimization_plant.num_positions()
+
+    # dictionary to make it mutable
+    traj_plot_state = {"rgba": Rgba(1, 0, 0, 1)}
 
     print("Planning initial trajectory from q1 to q2")
 
@@ -66,6 +75,18 @@ def setup_trajectory_optimization_from_q1_to_q2(
         optimization_plant.GetVelocityLowerLimits(),
         optimization_plant.GetVelocityUpperLimits(),
     )
+    trajopt.AddVelocityBounds(
+        -vel_limits.reshape((num_q, 1)),
+        vel_limits.reshape((num_q, 1)),
+    )
+    # trajopt.AddAccelerationBounds(
+    #     -acc_limits.reshape((num_q, 1)),
+    #     acc_limits.reshape((num_q, 1)),
+    # )
+    # trajopt.AddVelocityBounds(
+    #     np.full((num_q, 1), -1.0),
+    #     np.full((num_q, 1), 1.0),
+    # )
 
     # ============= Constraints =============
     trajopt.AddDurationConstraint(duration_constraints[0], duration_constraints[1])
@@ -87,7 +108,6 @@ def setup_trajectory_optimization_from_q1_to_q2(
             """
             Visualize the end-effector path in Meshcat
             """
-            rgba = Rgba(0, 1, 0, 1)
             cps = control_points.reshape((num_q, num_control_points))
             # Reconstruct the spline trajectory
             traj = BsplineTrajectory(trajopt.basis(), cps)
@@ -98,7 +118,7 @@ def setup_trajectory_optimization_from_q1_to_q2(
                 internal_plant.SetPositions(internal_context, q)
                 X_WB = internal_plant.EvalBodyPoseInWorld(
                     internal_context,
-                    internal_plant.GetBodyByName("iiwa_link_7"),
+                    internal_plant.GetBodyByName("microscope_tip_link"),
                 )
                 ee_positions.append(X_WB.translation())
             ee_positions = np.array(ee_positions).T  # shape (3, N)
@@ -106,12 +126,12 @@ def setup_trajectory_optimization_from_q1_to_q2(
                 "positions_path",
                 ee_positions,
                 line_width=0.05,
-                rgba=rgba,
+                rgba=traj_plot_state["rgba"],
             )
 
         prog.AddVisualizationCallback(PlotPath, trajopt.control_points().reshape((-1,)))
 
-    return trajopt, prog
+    return trajopt, prog, traj_plot_state
 
 
 def add_collision_constraints_to_trajectory(
@@ -156,18 +176,11 @@ def resolve_with_toppra(
     # Reparameterize with TOPPRA
     geometric_path = trajopt.ReconstructTrajectory(result)
 
-    # Plot joint trajectories
-    ts = np.linspace(geometric_path.start_time(), geometric_path.end_time(), 100)
-    # qs = np.array([geometric_path.value(t) for t in ts])
-    # plt.figure()
-    # for i in range(qs.shape[1]):
-    #     plt.plot(ts, qs[:, i], label=f"Joint {i+1}")
-    # plt.xlabel("Time [s]")
-    # plt.ylabel("Joint Position [rad]")
-    # plt.title("Geometric Path Joint Positions")
-    # plt.legend()
-    # plt.savefig("output/geometric_path.png")
-    # plt.close()
+    # Diagnostic: Check trajectory properties before TOPPRA
+    print("\n=== TOPPRA Diagnostic Info ===")
+    print(f"Trajectory duration: {geometric_path.end_time():.4f}s")
+    print(f"Velocity limits: {vel_limits}")
+    print(f"Acceleration limits: {acc_limits}")
 
     trajectory = reparameterize_with_toppra(
         geometric_path,

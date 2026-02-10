@@ -775,6 +775,56 @@ def generate_hemisphere_joint_poses(
     return cost, path
 
 
+def store_joint_poses_to_csv(joint_poses, csv_path):
+    """
+    Store joint poses to a CSV file.
+
+    Args:
+        joint_poses (list): List of joint configurations (each as np.ndarray)
+        csv_path (str or Path): Path to save the CSV file
+    """
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        # Write header
+        header = [f"joint_{i+1}" for i in range(len(joint_poses[0]))]
+        writer.writerow(header)
+
+        # Write joint poses
+        for q in joint_poses:
+            writer.writerow(q.tolist())
+
+    print(f"Joint poses saved to: {csv_path.absolute()}")
+
+
+def load_joint_poses_from_csv(csv_path):
+    """
+    Load joint poses from a CSV file.
+
+    Args:
+        csv_path (str or Path): Path to the CSV file
+    Returns:
+        list: List of joint configurations (each as np.ndarray)
+    """
+
+    joint_poses = []
+    csv_path = Path(csv_path)
+
+    with open(csv_path, "r", newline="") as csvfile:
+        reader = csv.reader(csvfile)
+        # Skip header
+        next(reader)
+
+        for row in reader:
+            q = np.array([float(val) for val in row])
+            joint_poses.append(q)
+
+    print(f"Loaded {len(joint_poses)} joint poses from: {csv_path.absolute()}")
+    return joint_poses
+
+
 def find_best_hemisphere_center(
     station: IiwaHardwareStationDiagram,
     hemisphere_centers: list,
@@ -873,15 +923,3 @@ def find_best_hemisphere_center(
     print(colored(f"{'='*60}\n", "cyan"))
 
     return best_center, best_cost, best_path
-    # ===================================================================
-    # Debugging
-    # ===================================================================
-
-    # # Test if IK solver can solve many values for first waypoint
-    # print("Testing IK solver for first waypoint...")
-
-    # # Get necessary values
-    # internal_plant = station.get_internal_plant()
-    # internal_sg = station.internal_station.get_scene_graph()
-    # context = station.internal_station.CreateDefaultContext()
-    # Test current robot location for self-collisions

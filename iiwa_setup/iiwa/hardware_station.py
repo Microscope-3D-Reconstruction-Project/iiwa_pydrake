@@ -73,11 +73,6 @@ class PlantUpdater(LeafSystem):
             "iiwa.position",
             self._plant.num_positions(self._iiwa_model_instance_index),
         )
-        # if self._has_wsg:
-        #     self._wsg_position_input_port = self.DeclareVectorInputPort(
-        #         "wsg.position",
-        #         self._plant.num_positions(self._wsg_model_instance_index),
-        #     )
 
         # Output ports
         self._position_output_port = self.DeclareVectorOutputPort(
@@ -545,25 +540,6 @@ class IiwaHardwareStationDiagram(Diagram):
             name = port.get_name()
             if name not in exported_internal_station_port_names:
                 builder.ExportOutput(port, name)
-        # if (
-        #     len(scenario.cameras.items()) > 0
-        #     and create_point_clouds
-        #     and not use_hardware
-        # ):
-        #     # TODO: Remove plant dependency from AddPointClouds to allow using it with
-        #     # hardware
-        #     depth_img_to_pcd_systems = AddPointClouds(
-        #         scenario=scenario,
-        #         station=self._external_station,
-        #         builder=builder,
-        #         meshcat=self.external_meshcat,
-        #     )
-        #     for _, camera_config in scenario.cameras.items():
-        #         name = camera_config.name
-        #         builder.ExportOutput(
-        #             depth_img_to_pcd_systems[name].point_cloud_output_port(),
-        #             f"{name}.point_cloud",
-        #         )
 
         builder.BuildInto(self)
 
