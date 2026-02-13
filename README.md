@@ -335,3 +335,6 @@ Example usage (GUI):
 python scripts/simulate_optitrack.py --initial_object_position '[0.5, 0.0, 0.15]' \
 --initial_object_quaternion '[1.0, 0.0, 0.0, 0.0]' --optitrack_object_ids '[4, 3]'
 ```
+
+## Microscope Setup
+(TODO: Doesn't work on ubuntu 22.04 off the fly)
