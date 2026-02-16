@@ -1,7 +1,7 @@
 import numpy as np
 
-from geometric_subproblems import rot, sp_1, sp_2, sp_3
-from sew_stereo import SEWStereo
+from utils.geometric_subproblems import rot, sp_1, sp_2, sp_3
+from utils.sew_stereo import SEWStereo
 
 """
 Geometry-based kinematics for KUKA LBR iiwa 14 R820 robot.

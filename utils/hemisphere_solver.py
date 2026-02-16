@@ -19,7 +19,7 @@ from termcolor import colored
 from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
 
 # Personal files
-from scripts.kuka_geo_kin import KinematicsSolver
+from utils.kuka_geo_kin import KinematicsSolver
 
 
 class Node:

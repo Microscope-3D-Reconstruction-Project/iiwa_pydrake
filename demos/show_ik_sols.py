@@ -41,19 +41,8 @@ from iiwa_setup.util.traj_planning import compute_simple_traj_from_q1_to_q2
 from iiwa_setup.util.visualizations import draw_sphere
 
 # Personal files
-from scripts.hemisphere_solver import (
-    SphereScorer,
-    find_best_hemisphere_center,
-    generate_hemisphere_joint_poses,
-)
-from scripts.kuka_geo_kin import KinematicsSolver
-
-"""
-Run this file to manually check for collision at different joint poses.
-1) Use joint sliders to move the robot.
-2) Press "Check Collision" button to see if the current pose is in collision.
-    a) The optimization MeshCat will visualize the robot pose for you to see for you to check if there is a collision (localhost:7001 at the time of me testing this)
-"""
+from utils.hemisphere_solver import generate_hemisphere_joint_poses
+from utils.kuka_geo_kin import KinematicsSolver
 
 
 def main(use_hardware: bool) -> None:
@@ -105,6 +94,7 @@ def main(use_hardware: bool) -> None:
     link7_frame = internal_plant.GetFrameByName("iiwa_link_7")
 
     # Load teleop sliders
+    controller_plant = station.get_iiwa_controller_plant()
     teleop = builder.AddSystem(
         JointSliders(
             station.internal_meshcat,
@@ -123,6 +113,25 @@ def main(use_hardware: bool) -> None:
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
+    # Add coordinate frames
+    AddFrameTriadIllustration(
+        scene_graph=station.internal_station.get_scene_graph(),
+        plant=internal_plant,
+        frame=tip_frame,
+        length=0.05,
+        radius=0.002,
+        name="microscope_tip_frame",
+    )
+
+    AddFrameTriadIllustration(
+        scene_graph=station.internal_station.get_scene_graph(),
+        plant=internal_plant,
+        frame=link7_frame,
+        length=0.1,
+        radius=0.002,
+        name="iiwa_link_7_frame",
+    )
+
     # Build diagram
     diagram = builder.Build()
 
@@ -134,51 +143,100 @@ def main(use_hardware: bool) -> None:
     simulator.set_target_realtime_rate(1.0)
 
     station.internal_meshcat.AddButton("Stop Simulation")
-    station.internal_meshcat.AddButton("Check Collision")
+    station.internal_meshcat.AddButton("Plan Trajectory")
+    station.internal_meshcat.AddButton("Move to Goal")
 
     # ====================================================================
     # Compute all joint poses for sphere scanning
     # ====================================================================
+    kinematics_solver = KinematicsSolver(station)
+
     # Solve example IK
-    hemisphere_pos = np.array([0.6666666, 0.0, 0.444444])
-    hemisphere_radius = 0.05
+    target_rot = np.eye(3)
+    target_pos = np.array([0.7, 0.0, 0.6])
+    vel_limits = np.full(7, 1.5)  # rad/s
+    acc_limits = np.full(7, 1.5)  # rad/s²
+
     draw_sphere(
         station.internal_meshcat,
         "target_sphere",
-        position=hemisphere_pos,
-        radius=hemisphere_radius,
+        position=target_pos,
+        radius=0.02,
     )
 
-    kinematics_solver = KinematicsSolver(station)
-    sphere_scorer = SphereScorer(station, kinematics_solver)
+    q_sols = kinematics_solver.IK_for_microscope(
+        target_rot,
+        target_pos,
+        psi=0,
+    )
+
+    print("IK solutions for test pose:")
+    for idx, q_sol in enumerate(q_sols):
+        print(f"Solution {idx + 1}: {q_sol}")
+
+    controller_plant = station.get_iiwa_controller_plant()
 
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
-    collision_clicks = 0
-    path_idx = 0
+    move_clicks = 0
+    ik_idx = 0
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
-        if (
-            station.internal_meshcat.GetButtonClicks("Check Collision")
-            > collision_clicks
-        ):
-            collision_clicks = station.internal_meshcat.GetButtonClicks(
-                "Check Collision"
+        if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
+            move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
+
+            if ik_idx >= len(q_sols):
+                print("All IK solutions have been executed.")
+                continue
+
+            q_goal = q_sols[ik_idx]
+            print(f"Moving to goal: {q_goal}")
+
+            station_context = station.GetMyContextFromRoot(simulator.get_context())
+            # Read the measured position from the station (works for both Sim and Hardware)
+            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
+                station_context
             )
 
-            # Get values of teleop sliders, not the hardware
-            context = simulator.get_context()
-            teleop_context = teleop.GetMyContextFromRoot(context)
-            q = teleop.get_output_port().Eval(teleop_context)
+            traj = compute_simple_traj_from_q1_to_q2(
+                controller_plant,
+                q_current,
+                q_goal,
+                vel_limits=vel_limits,
+                acc_limits=acc_limits,
+            )
 
-            print("Checking collision at q:", q)
-            sphere_scorer.is_in_self_collision(q)
-            # print("Is there a collision?", sphere_scorer.is_in_self_collision(q))
+            t_traj = 0.0
+            dt = 0.01
+            t_start = simulator.get_context().get_time()
+
+            while t_traj < traj.end_time():
+                q_d = traj.value(t_traj).flatten()
+                teleop.SetPositions(q_d)
+
+                step = min(dt, traj.end_time() - t_traj)
+                simulator.AdvanceTo(t_start + t_traj + step)
+                t_traj += step
+
+            # Print microscope tip position after reaching goal
+            station_context = station.get_internal_plant_context()
+            X_W_TIP = station.get_internal_plant().CalcRelativeTransform(
+                station_context,
+                station.get_internal_plant().world_frame(),
+                station.get_internal_plant().GetFrameByName("microscope_tip_link"),
+            )
+            tip_pos = X_W_TIP.translation()
+            print(
+                f"Reached IK solution {ik_idx + 1}. Microscope tip position: {tip_pos}"
+            )
+
+            ik_idx += 1
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 
     station.internal_meshcat.DeleteButton("Stop Simulation")
-    station.internal_meshcat.DeleteButton("Check Collision")
+    station.internal_meshcat.DeleteButton("Plan Trajectory")
+    station.internal_meshcat.DeleteButton("Move to Goal")
 
 
 if __name__ == "__main__":

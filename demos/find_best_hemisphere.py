@@ -41,8 +41,12 @@ from iiwa_setup.util.traj_planning import compute_simple_traj_from_q1_to_q2
 from iiwa_setup.util.visualizations import draw_sphere
 
 # Personal files
-from scripts.hemisphere_solver import generate_hemisphere_joint_poses
-from scripts.kuka_geo_kin import KinematicsSolver
+from utils.hemisphere_solver import (
+    SphereScorer,
+    find_best_hemisphere_center,
+    generate_hemisphere_joint_poses,
+)
+from utils.kuka_geo_kin import KinematicsSolver
 
 
 def main(use_hardware: bool) -> None:
@@ -94,7 +98,6 @@ def main(use_hardware: bool) -> None:
     link7_frame = internal_plant.GetFrameByName("iiwa_link_7")
 
     # Load teleop sliders
-    controller_plant = station.get_iiwa_controller_plant()
     teleop = builder.AddSystem(
         JointSliders(
             station.internal_meshcat,
@@ -151,86 +154,48 @@ def main(use_hardware: bool) -> None:
     # ====================================================================
     kinematics_solver = KinematicsSolver(station)
 
-    # Solve example IK
-    target_rot = np.eye(3)
-    target_pos = np.array([0.7, 0.0, 0.6])
-    vel_limits = np.full(7, 1.5)  # rad/s
-    acc_limits = np.full(7, 1.5)  # rad/s²
+    hemisphere_centers = []
+    hemisphere_radius = 0.05
+    point_density = 10
 
-    draw_sphere(
-        station.internal_meshcat,
-        "target_sphere",
-        position=target_pos,
-        radius=0.02,
+    x_points = np.linspace(0, 1.0, point_density)
+    y_points = np.array([0])
+    z_points = np.linspace(0.0, 1.0, point_density)
+    hemisphere_centers = []
+    for x in x_points:
+        for y in y_points:
+            for z in z_points:
+                hemisphere_centers.append(np.array([x, y, z]))
+
+    find_best_hemisphere_center(
+        station=station,
+        hemisphere_centers=hemisphere_centers,
+        radius=hemisphere_radius,
+        num_poses=30,
+        num_rotations_per_pose=7,
+        num_elbow_positions=10,
+        kinematics_solver=kinematics_solver,
     )
-
-    q_sols = kinematics_solver.IK_for_microscope(
-        target_rot,
-        target_pos,
-        psi=0,
-    )
-
-    print("IK solutions for test pose:")
-    for idx, q_sol in enumerate(q_sols):
-        print(f"Solution {idx + 1}: {q_sol}")
-
-    controller_plant = station.get_iiwa_controller_plant()
+    # sphere_scorer = SphereScorer(station, kinematics_solver)
 
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
     move_clicks = 0
-    ik_idx = 0
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
         if station.internal_meshcat.GetButtonClicks("Move to Goal") > move_clicks:
             move_clicks = station.internal_meshcat.GetButtonClicks("Move to Goal")
 
-            if ik_idx >= len(q_sols):
-                print("All IK solutions have been executed.")
-                continue
+            # test if self-collision
+            # Get current q through teleop values
+            # teleop_context = diagram.GetSubsystemContext(
+            #     teleop, simulator.get_context()
+            # )
+            # q_current = teleop.get_output_port().Eval(teleop_context)
+            # print("Current joint positions:", q_current)
 
-            q_goal = q_sols[ik_idx]
-            print(f"Moving to goal: {q_goal}")
-
-            station_context = station.GetMyContextFromRoot(simulator.get_context())
-            # Read the measured position from the station (works for both Sim and Hardware)
-            q_current = station.GetOutputPort("iiwa.position_measured").Eval(
-                station_context
-            )
-
-            traj = compute_simple_traj_from_q1_to_q2(
-                controller_plant,
-                q_current,
-                q_goal,
-                vel_limits=vel_limits,
-                acc_limits=acc_limits,
-            )
-
-            t_traj = 0.0
-            dt = 0.01
-            t_start = simulator.get_context().get_time()
-
-            while t_traj < traj.end_time():
-                q_d = traj.value(t_traj).flatten()
-                teleop.SetPositions(q_d)
-
-                step = min(dt, traj.end_time() - t_traj)
-                simulator.AdvanceTo(t_start + t_traj + step)
-                t_traj += step
-
-            # Print microscope tip position after reaching goal
-            station_context = station.get_internal_plant_context()
-            X_W_TIP = station.get_internal_plant().CalcRelativeTransform(
-                station_context,
-                station.get_internal_plant().world_frame(),
-                station.get_internal_plant().GetFrameByName("microscope_tip_link"),
-            )
-            tip_pos = X_W_TIP.translation()
-            print(
-                f"Reached IK solution {ik_idx + 1}. Microscope tip position: {tip_pos}"
-            )
-
-            ik_idx += 1
+            # collision = sphere_scorer.is_in_self_collision(q_current)
+            # print("Self-collision:", collision)
 
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 

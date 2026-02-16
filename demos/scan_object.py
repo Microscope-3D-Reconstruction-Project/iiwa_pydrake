@@ -32,8 +32,8 @@ from iiwa_setup.util.traj_planning import (
     setup_trajectory_optimization_from_q1_to_q2,
 )
 from iiwa_setup.util.visualizations import draw_sphere
-from scripts.hemisphere_solver import load_joint_poses_from_csv
-from scripts.kuka_geo_kin import KinematicsSolver
+from utils.hemisphere_solver import load_joint_poses_from_csv
+from utils.kuka_geo_kin import KinematicsSolver
 
 
 class State(Enum):
