@@ -123,7 +123,9 @@ class KinematicsSolver:
 
         return {"P": kin_P, "H": kin_H, "joint_type": joint_type}
 
-    def IK_for_microscope_multiple_elbows(self, R_0M, p_0M, num_elbow_angles=50):
+    def IK_for_microscope_multiple_elbows(
+        self, R_0M, p_0M, num_elbow_angles=50, track_elbow_angle=False
+    ):
         """
         Solve the inverse kinematics for the KUKA LBR iiwa 14 R820 robot with a microscope mount, sampling multiple elbow configurations.
 
@@ -131,19 +133,30 @@ class KinematicsSolver:
             R_0M (np.ndarray): 3x3 rotation matrix from base to microscope mount.
             p_0M (np.ndarray): 3-element position vector of the microscope mount in the base frame.
             num_elbow_angles (int): Number of elbow angle samples to generate.
+            track_elbow_angle (bool): If True, return elbow angles alongside solutions.
 
         Returns:
             Qs (np.ndarray): An Nx7 array of N IK solutions, where each row is a 7-element vector of joint angles.
+            elbow_angles_list (list): (Optional) List of elbow angles corresponding to each solution in Qs. Only returned if track_elbow_angle=True.
         """
 
         Qs = []
+        elbow_angles_list = []
         elbow_angles = np.linspace(-np.pi, np.pi, num_elbow_angles)
         for i in range(num_elbow_angles):
             Q = self.IK_for_microscope(R_0M, p_0M, psi=elbow_angles[i])
-            Qs.append(Q)
+            if Q.shape[0] > 0:  # Only append if solutions were found
+                Qs.append(Q)
+                if track_elbow_angle:
+                    # Add the elbow angle for each solution in Q
+                    elbow_angles_list.extend([elbow_angles[i]] * Q.shape[0])
 
         Qs = np.vstack(Qs) if Qs else np.array([]).reshape(0, 7)
-        return Qs
+
+        if track_elbow_angle:
+            return Qs, elbow_angles_list
+        else:
+            return Qs
 
     def IK_for_microscope(self, R_0M, p_0M, psi=None):
         """
@@ -193,27 +206,32 @@ class KinematicsSolver:
         Qs = np.vstack(Qs) if Qs else np.array([]).reshape(0, 7)
         return Qs
 
-    def find_closest_solution(self, Q, q_current):
+    def find_closest_solution(self, Q, q, return_index=False):
         """
         Find the closest IK solution to the current joint configuration.
 
         Args:
             Q (np.ndarray): An Nx7 array of N IK solutions.
             q_current (np.ndarray): A 7-element vector of current joint angles.
+            return_index (bool): If True, also return the index of the closest solution.
 
         Returns:
             q_closest (np.ndarray): A 7-element vector of the closest joint angles.
+            closest_index (int): (Optional) Index of the closest solution. Only returned if return_index=True.
         """
         if Q.shape[0] == 0:
             raise ValueError("No IK solutions found.")
 
         # Calculate the distance from each solution to the current joint configuration
-        distances = np.linalg.norm(Q - q_current, axis=1)
+        distances = np.linalg.norm(Q - q, axis=1)
 
         # Find the index of the closest solution
         closest_index = np.argmin(distances)
 
-        return Q[closest_index]
+        if return_index:
+            return Q[closest_index], closest_index
+        else:
+            return Q[closest_index]
 
     def kuka_IK(self, R_07, p_07, sew_class, psi):
         """

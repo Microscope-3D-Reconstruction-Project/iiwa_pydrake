@@ -10,6 +10,7 @@ from pydrake.all import (
     MinimumDistanceLowerBoundConstraint,
     PiecewisePolynomial,
     Rgba,
+    Solve,
 )
 
 from iiwa_setup.motion_planning.toppra import reparameterize_with_toppra
@@ -35,6 +36,33 @@ def compute_simple_traj_from_q1_to_q2(
 
     print("Trajectory generation complete!")
     return traj
+
+
+def PlotPath(traj_points, station, internal_plant, internal_context):
+    """
+    Visualize the end-effector path in Meshcat
+    """
+
+    cps = traj_points.reshape((7, -1))
+    # Reconstruct the spline trajectory
+    traj = BsplineTrajectory(trajopt.basis(), cps)
+    s_samples = np.linspace(0, 1, 100)
+    ee_positions = []
+    for s in s_samples:
+        q = traj.value(s).flatten()
+        internal_plant.SetPositions(internal_context, q)
+        X_WB = internal_plant.EvalBodyPoseInWorld(
+            internal_context,
+            internal_plant.GetBodyByName("microscope_tip_link"),
+        )
+        ee_positions.append(X_WB.translation())
+    ee_positions = np.array(ee_positions).T  # shape (3, N)
+    station.internal_meshcat.SetLine(
+        "positions_path",
+        ee_positions,
+        line_width=0.05,
+        rgba=traj_plot_state["rgba"],
+    )
 
 
 def setup_trajectory_optimization_from_q1_to_q2(
@@ -188,5 +216,48 @@ def resolve_with_toppra(
         velocity_limits=vel_limits,
         acceleration_limits=acc_limits,
     )
+
+    return trajectory
+
+
+def create_traj_from_q1_to_q2(
+    station,
+    q1: np.ndarray,
+    q2: np.ndarray,
+    vel_limits: np.ndarray = np.full(7, 1.0),
+    acc_limits: np.ndarray = np.full(7, 1.0),
+    duration_constraints: tuple[float, float] = (0.5, 5.0),
+    num_control_points: int = 10,
+    duration_cost: float = 1.0,
+    path_length_cost: float = 1.0,
+    visualize_solving: bool = True,
+):
+    trajopt, prog, traj_plot_state = setup_trajectory_optimization_from_q1_to_q2(
+        station,
+        q1,
+        q2,
+        vel_limits,
+        acc_limits,
+        duration_constraints,
+        num_control_points,
+        duration_cost,
+        path_length_cost,
+        visualize_solving,
+    )
+
+    # trajopt_with_collisions = add_collision_constraints_to_trajectory(station, trajopt)
+
+    print("Solving trajectory optimization...")
+    result = Solve(prog)
+
+    if not result.is_success():
+        print("Trajectory optimization failed!")
+        return None
+
+    print("Trajectory optimization succeeded!")
+
+    trajectory = resolve_with_toppra(station, trajopt, result, vel_limits, acc_limits)
+
+    print(f"✓ TOPPRA succeeded! Trajectory duration: {trajectory.end_time():.2f}s")
 
     return trajectory

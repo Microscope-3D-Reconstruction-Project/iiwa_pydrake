@@ -39,6 +39,39 @@ class State(Enum):
     MOVING_TO_START = auto()
 
 
+def generate_spiral_points(
+    center, num_spirals=2, max_radius=0.05, num_points=100, t_final=10.0
+):
+    # ================================================================
+    # Spiral trajectory generation
+    # ================================================================
+
+    t = np.linspace(0, t_final, num_points)
+    theta = np.linspace(0, num_spirals * 2 * np.pi, num_points)
+
+    # Spiral starts at center (radius=0) and grows linearly to max_radius
+    radius = (theta / theta[-1]) * max_radius
+
+    x = radius * np.cos(theta) + center[0]
+    y = radius * np.sin(theta) + center[1]
+    z = np.zeros_like(x) + center[2]
+    points = np.vstack([x, y, z])
+
+    return points, t
+
+
+def generate_hemisphere_points(center, radius, num_points=100, t_final=10.0):
+    """
+    Args:
+        center: (x, y, z) coordinates of the hemisphere center
+        radius: radius of the hemisphere
+        num_points: number of points to generate on the hemisphere surface
+        t_final: total time for trajectory (used to create time array for PiecewisePolynomial)
+    """
+
+    t = np.linspace(0, t_final, num_points)
+
+
 def main(use_hardware: bool) -> None:
     scenario_data = """
     directives:
@@ -74,7 +107,7 @@ def main(use_hardware: bool) -> None:
     # Load scenario
     scenario = LoadScenario(data=scenario_data)
     hemisphere_pos = np.array([0.6666666, 0.0, 0.444444])
-    hemisphere_radius = 0.01
+    hemisphere_radius = 0.05
     station: IiwaHardwareStationDiagram = builder.AddNamedSystem(
         "station",
         IiwaHardwareStationDiagram(
@@ -85,10 +118,8 @@ def main(use_hardware: bool) -> None:
         ),
     )
 
-    # Load all values I use later
-    controller_plant = station.get_iiwa_controller_plant()
-
     # Load teleop sliders
+    controller_plant = station.get_iiwa_controller_plant()
     teleop = builder.AddSystem(
         JointSliders(
             station.internal_meshcat,
@@ -121,35 +152,27 @@ def main(use_hardware: bool) -> None:
     station.internal_meshcat.AddButton("Move to Top of Spiral")
     station.internal_meshcat.AddButton("Execute Trajectory")
 
-    # ================================================================
-    # Spiral trajectory generation
-    # ================================================================
     # Spiral parameters
     num_spirals = 2  # Number of complete rotations
+    num_scan_points = 5  # Number of points where robot should stop along the spiral (including start and end)
     max_radius = 0.05  # Maximum radius in meters
     num_points = 100
     t_final = 10.0  # Total time for trajectory
+    points, t = generate_spiral_points(
+        hemisphere_pos,
+        num_spirals=num_spirals,
+        max_radius=max_radius,
+        num_points=num_points,
+        t_final=t_final,
+    )
 
-    t = np.linspace(0, t_final, num_points)
-    theta = np.linspace(0, num_spirals * 2 * np.pi, num_points)
-
-    # Spiral starts at center (radius=0) and grows linearly to max_radius
-    radius = (theta / theta[-1]) * max_radius
-
-    x = radius * np.cos(theta)
-    y = radius * np.sin(theta)
-    z = np.zeros_like(x)  # flat spiral
-
-    points = np.vstack([x, y, z])
-
-    # Visualize spiral path in matplotlib
+    # region Visualization of spiral in matplotlib (for debugging)
     import matplotlib.pyplot as plt
-
-    from mpl_toolkits.mplot3d import Axes3D
 
     fig = plt.figure(figsize=(12, 5))
 
     # 3D view
+    x, y, z = points
     ax1 = fig.add_subplot(121, projection="3d")
     ax1.plot(x, y, z, "b-", linewidth=2)
     ax1.scatter(x[0], y[0], z[0], c="g", s=100, marker="o", label="Start")
@@ -183,9 +206,9 @@ def main(use_hardware: bool) -> None:
     plt.savefig(spiral_path_file)
     print(colored(f"Spiral path plot saved to {spiral_path_file}", "cyan"))
     plt.close()
-    # trajectory = PiecewisePolynomial.FirstOrderHold(t, points)
+    # endregion
 
-    # Step 1) Solve IK for desired pose
+    # region Step 1) Solve IK for desired pose
     kinematics_solver = KinematicsSolver(station)
 
     station_context = station.GetMyContextFromRoot(simulator.get_context())
@@ -195,9 +218,7 @@ def main(use_hardware: bool) -> None:
 
     trajectory_joint_poses = []
     for i in range(num_points):
-        eef_pos = (
-            points[:, i] + hemisphere_pos
-        )  # Shift spiral to be around the hemisphere center
+        eef_pos = points[:, i]  # Shift spiral to be around the hemisphere center
         eef_rot = np.eye(3)  # Keep end-effector orientation fixed
 
         if i == 0:
@@ -222,36 +243,36 @@ def main(use_hardware: bool) -> None:
         q_prev = q_curr
 
     trajectory_joint_poses = np.array(trajectory_joint_poses).T  # Shape (7, num_points)
+    # endregion
 
-    # Visualize traj in matplotlib
-    import os
+    # region Step 2) Break down trajectory into segments between scan points and convert to PiecewisePolynomial
+    segment_length = num_points // (num_scan_points - 1)
+    print(
+        colored(
+            f"Segment length (number of points between scan points): {segment_length}",
+            "cyan",
+        )
+    )
+    spiral_trajectories = []
+    for i in range(num_scan_points - 1):
+        start_idx = i * segment_length
+        end_idx = (i + 1) * segment_length if i < num_scan_points - 2 else num_points
 
-    import matplotlib.pyplot as plt
+        # Create time array that starts from 0 for each segment
+        num_segment_points = end_idx - start_idx
+        segment_duration = t[min(end_idx - 1, len(t) - 1)] - t[start_idx]
+        segment_times = np.linspace(0, segment_duration, num_segment_points)
 
-    plt.figure(figsize=(12, 8))
-    for i in range(7):
-        plt.plot(t, trajectory_joint_poses[i, :], label=f"Joint {i+1}")
-    plt.title("Joint Trajectories for Spiral End-Effector Path")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Joint Angle (rad)")
-    plt.legend()
-    plt.grid()
+        sub_traj = PiecewisePolynomial.FirstOrderHold(
+            segment_times, trajectory_joint_poses[:, start_idx:end_idx]
+        )
+        spiral_trajectories.append(sub_traj)
 
-    # Save to outputs folder
-    current_dir = Path(__file__).parent.parent
-    outputs_dir = current_dir / "outputs"
-    outputs_dir.mkdir(exist_ok=True)
-    save_path = outputs_dir / "spiral_trajectory.png"
-    plt.savefig(save_path)
-    print(colored(f"Trajectory plot saved to {save_path}", "cyan"))
+    print(colored("Number of trajectory segments:", "cyan"), len(spiral_trajectories))
+    # endregion
 
-    # Convert to PiecewisePolynomial for execution
-    spiral_trajectory = PiecewisePolynomial.FirstOrderHold(t, trajectory_joint_poses)
-
-    # Plot the points
-    desired_ee_positions = points + np.expand_dims(
-        hemisphere_pos, axis=1
-    )  # Shift spiral to be around hemisphere center
+    # region Step 3) Plot full trajectory into Meshcat
+    desired_ee_positions = points
     station.internal_meshcat.SetLine(
         "desired_spiral_path",
         desired_ee_positions,
@@ -259,6 +280,8 @@ def main(use_hardware: bool) -> None:
         rgba=Rgba(1, 1, 1, 1),
     )
     print(colored("Spiral trajectory generated and visualized in Meshcat!", "cyan"))
+    # endregion
+
     # ====================================================================
     # Main Simulation Loop
     # ====================================================================
@@ -267,6 +290,7 @@ def main(use_hardware: bool) -> None:
     # Button management
     num_move_to_top_clicks = 0
     num_execute_traj_clicks = 0
+    current_segment = 0
 
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
         if (
@@ -274,10 +298,22 @@ def main(use_hardware: bool) -> None:
             and station.internal_meshcat.GetButtonClicks("Execute Trajectory")
             > num_execute_traj_clicks
             and not station.internal_meshcat.GetButtonClicks("Move to Top of Spiral")
-            == 0  # Need to move to top of spiral first
+            == 0  # If already moved to top of spiral
         ):
-            print(colored("Executing trajectory!", "cyan"))
+            num_execute_traj_clicks = station.internal_meshcat.GetButtonClicks(
+                "Execute Trajectory"
+            )
+
+            if current_segment >= len(spiral_trajectories):
+                print(colored("All trajectory segments executed", "red"))
+                break
+
+            print(colored("Executing segment of spiral trajectory", "cyan"))
             state = State.MOVING
+            spiral_trajectory = spiral_trajectories[
+                current_segment
+            ]  # TODO: Need to execute sub-trajectories sequentially
+            current_segment += 1
             trajectory_start_time = simulator.get_context().get_time()
 
         elif (
@@ -285,6 +321,9 @@ def main(use_hardware: bool) -> None:
             and station.internal_meshcat.GetButtonClicks("Move to Top of Spiral")
             > num_move_to_top_clicks
         ):
+            num_move_to_top_clicks = station.internal_meshcat.GetButtonClicks(
+                "Move to Top of Spiral"
+            )
             print(colored("Moving to top of spiral!", "cyan"))
 
             station_context = station.GetMyContextFromRoot(simulator.get_context())
