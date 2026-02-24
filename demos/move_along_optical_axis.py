@@ -166,9 +166,13 @@ def generate_waypoints_down_optical_axis(
     path_points = []
     path_rots = []
 
+    total_distance = 0.05  # Total distance to travel down optical axis
+
     for i in range(num_points):
         # Move down the optical axis (negative z direction in end-effector frame)
-        delta_z = -0.1 * i / num_points  # Move down 10 cm over the course of the path
+        delta_z = (
+            -total_distance * i / num_points
+        )  # Move down 10 cm over the course of the path
         delta_transform = RigidTransform(
             np.array([0, 0, delta_z])
         )  # No rotation change, just translation down z-axis
