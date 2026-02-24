@@ -31,6 +31,7 @@ from pydrake.all import (
 )
 from pydrake.systems.drawing import plot_system_graphviz
 from pydrake.systems.primitives import FirstOrderLowPassFilter
+from termcolor import colored
 
 from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
 from iiwa_setup.motion_planning.toppra import reparameterize_with_toppra
@@ -260,7 +261,12 @@ def main(use_hardware: bool, has_wsg: bool) -> None:
             # Solve for trajectory with collision avoidance
             result = Solve(prog)
             if not result.is_success():
-                print("Trajectory optimization failed")
+                print(
+                    colored(
+                        "Trajectory optimization with collision avoidance failed!",
+                        "red",
+                    )
+                )
                 print(result.get_solver_id().name())
                 continue
 

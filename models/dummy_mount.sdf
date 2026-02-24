@@ -2,41 +2,52 @@
 <sdf version="1.7">
   <model name="microscope_mount">
     <static>false</static>
-    <link name="microscope_link">
-      <pose>0 0 0 0 0 0</pose>
-      <!-- Visual -->
-      <visual name="microscope_visual">
-        <geometry>
-          <mesh>
-            <uri>microscope_mount.obj</uri>
-            <scale>0.001 0.001 0.001</scale>
-          </mesh>
-        </geometry>
-      </visual>
 
-      <!-- Collision (optional but recommended for physics) -->
-      <collision name="microscope_collision">
+    <!-- Link representing the cylinder -->
+    <link name="microscope_cylinder_link">
+      <pose>0 0 0 0 0 0</pose>
+
+      <!-- Collision geometry -->
+      <collision name="microscope_cylinder_collision">
         <geometry>
-          <mesh>
-            <uri>microscope_mount.obj</uri>
-            <scale>0.001 0.001 0.001</scale>
-          </mesh>
+          <cylinder>
+            <radius>0.01</radius>
+            <length>0.075</length>
+          </cylinder>
         </geometry>
       </collision>
 
+      <!-- Visual geometry -->
+      <visual name="microscope_cylinder_visual">
+        <geometry>
+          <cylinder>
+            <radius>0.01</radius>
+            <length>0.075</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.6 0.6 0.6 1</ambient>
+          <diffuse>0.6 0.6 0.6 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- Inertia for dynamics (approximate) -->
       <inertial>
-        <mass>0.1</mass>
+        <mass>0.2</mass>
         <inertia>
-          <ixx>0.001</ixx>
-          <iyy>0.001</iyy>
-          <izz>0.001</izz>
+          <ixx>0.0001</ixx>
+          <iyy>0.0001</iyy>
+          <izz>0.0001</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
         </inertia>
       </inertial>
     </link>
 
     <!-- Link representing microscope tip -->
     <link name="microscope_tip_link">
-      <pose>-0.0674 0.0428 -0.0946 0 0 0</pose> <!-- tip frame should be same as world when microscope is pointing down -->
+      <pose>0 0 0.0375 0 3.14159 0</pose> <!-- tip frame should be same as world when microscope is pointing down -->
       <!-- Collision geometry -->
       <collision name="microscope_tip_collision">
         <geometry>
@@ -74,7 +85,7 @@
     </link>
 
     <joint name="fixed_tip" type="fixed">
-      <parent>microscope_link</parent>
+      <parent>microscope_cylinder_link</parent>
       <child>microscope_tip_link</child>
     </joint>
   </model>

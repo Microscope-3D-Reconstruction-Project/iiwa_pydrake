@@ -5,13 +5,16 @@ import threading
 from enum import Enum, auto
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 # Drake imports
 from manipulation.meshcat_utils import WsgButton
 from manipulation.scenarios import AddIiwaDifferentialIK
 from manipulation.station import LoadScenario
+from mpl_toolkits.mplot3d import Axes3D
 from pydrake.all import (
+    AddFrameTriadIllustration,
     ApplySimulatorConfig,
     ConstantVectorSource,
     DiagramBuilder,
@@ -22,8 +25,8 @@ from pydrake.all import (
     RigidTransform,
     RotationMatrix,
     Simulator,
-    Solve,
 )
+from pydrake.multibody.tree import FrameIndex
 from pydrake.systems.drawing import plot_system_graphviz
 from pydrake.systems.primitives import FirstOrderLowPassFilter
 from termcolor import colored
@@ -66,9 +69,6 @@ def plot_path_with_frames(
         frame_scale: Scale factor for coordinate frame arrows (meters)
         num_frames: Approximate number of frames to display
     """
-    import matplotlib.pyplot as plt
-
-    from mpl_toolkits.mplot3d import Axes3D
 
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
@@ -181,6 +181,23 @@ def plot_path_with_frames(
     plt.close()
 
 
+def get_pose_from_scan_point(scan_point):
+    """
+    Given a scan point on the hemisphere, return a desired end-effector pose (rotation and position) for that point.
+    For simplicity, we can use the sphere_frame function to get a rotation matrix that aligns the end-effector z-axis with the surface normal at that point, and x/y axes tangentially.
+
+    Args:
+        scan_point: (3,) array of the scan point position on the hemisphere
+    Returns:
+        target_pose: RigidTransform representing the desired end-effector pose
+    """
+
+    target_rot = sphere_frame(scan_point)
+    target_pos = scan_point
+
+    return RigidTransform(RotationMatrix(target_rot), target_pos)
+
+
 def generate_hemisphere_points(center, radius, num_scan_points):
     """
     Generate N approximately uniformly distributed points on a hemisphere.
@@ -208,20 +225,25 @@ def generate_hemisphere_points(center, radius, num_scan_points):
 
         points.append([x_w, y_w, z_w] + center)
 
-    # plot for sanity check
-    import matplotlib.pyplot as plt
+    # # plot for sanity check
+    # import matplotlib.pyplot as plt
+    # from mpl_toolkits.mplot3d import Axes3D
+    # points = np.array(points)
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111, projection='3d')
+    # ax.scatter(points[:, 0], points[:, 1], points[:, 2])
 
-    from mpl_toolkits.mplot3d import Axes3D
-
-    points = np.array(points)
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(points[:, 0], points[:, 1], points[:, 2])
-    ax.set_title("Generated Hemisphere Points")
-    plt.savefig(
-        Path(__file__).parent.parent / "outputs" / "hemisphere_points.png", dpi=150
-    )
-    plt.close()
+    # # Add hemisphere surface for visualization, make sure top is at (-R, 0, 0)
+    # u = np.linspace(0, 2 * np.pi, 50)
+    # v = np.linspace(0, np.pi / 2, 25)  # Only upper hemisphere
+    # x_sphere = center[0] + radius * np.outer(np.cos(u), np.sin(v))
+    # y_sphere = center[1] + radius * np.outer(np.sin(u), np.sin(v))
+    # z_sphere = center[2] + radius * np.outer(np.ones(np.size(u)), np.cos(v))
+    # ax.plot_surface(x_sphere, y_sphere, z_sphere, alpha=0.2, color='cyan', edgecolor='none')
+    # ax.set_title("Generated Hemisphere Points")
+    # plt.savefig(Path(__file__).parent.parent / "outputs" / "hemisphere_points.png", dpi=150)
+    # plt.close()
+    # print(colored("✓ Hemisphere points generated and saved to outputs/hemisphere_points.png", "cyan"))
 
     return np.array(points)
 
@@ -231,13 +253,13 @@ def generate_waypoints_along_hemisphere(
 ):
     """
     Args:
-        center: (x, y, z) coordinates of the hemisphere center
-        radius: radius of the hemisphere
-        q_curr: current joint configuration (used as initial guess for IK)
-        target_pose: desired end-effector pose (NOTE: Using pose to give flexibility of IK solution
-        num_points: number of points to generate along the path
-        num_spirals: number of spiral loops to make around the hemisphere (default 2)
-        t_final: total time for trajectory (used to create time array for PiecewisePolynomial)
+        - center: (3,) array of hemisphere center
+        - radius: radius of hemisphere
+        - pose_curr: RigidTransform of current end-effector pose
+        - pose_target: RigidTransform of desired end-effector pose on hemisphere
+    Returns:
+        - path_points: (3, N) array of positions along the path
+        - path_rots: List of (3, 3) rotation matrices at each point along the path
     """
 
     # Step 1: Generate shortest path along hemisphere surface
@@ -513,6 +535,27 @@ def main(use_hardware: bool) -> None:
         builder, station.GetOutputPort("query_object"), station.internal_meshcat
     )
 
+    # Get total number of frames
+    plant = station.get_internal_plant()
+    num_frames = plant.num_frames()
+
+    # Iterate through all frames
+    for i in range(num_frames):
+        frame = plant.get_frame(FrameIndex(i))
+        print(f"{i}: {frame.name()} (body: {frame.body().name()})")
+
+    microscope_tip_frame = station.get_internal_plant().GetFrameByName(
+        "microscope_tip_link"
+    )
+    AddFrameTriadIllustration(
+        scene_graph=station.internal_station.get_scene_graph(),
+        plant=station.get_internal_plant(),
+        frame=microscope_tip_frame,
+        length=0.1,
+        radius=0.002,
+        name="microscope_link",
+    )
+
     # Build diagram
     diagram = builder.Build()
 
@@ -551,28 +594,35 @@ def main(use_hardware: bool) -> None:
     ik_thread = None
     ik_result = {"ready": False, "trajectory": None, "trajectory_start_time": None}
 
+    # Generate waypoints
+    hemisphere_scan_points = generate_hemisphere_points(
+        hemisphere_pos, hemisphere_radius, num_scan_points=30
+    )
+    scan_idx = 1
+
     while station.internal_meshcat.GetButtonClicks("Stop Simulation") < 1:
         if (
-            state == State.WAITING_FOR_NEXT_SCAN
-            and station.internal_meshcat.GetButtonClicks("Execute Trajectory")
-            > num_execute_traj_clicks
+            state
+            == State.WAITING_FOR_NEXT_SCAN
+            # and station.internal_meshcat.GetButtonClicks("Execute Trajectory")
+            # > num_execute_traj_clicks
         ):
-            # Get lat and long from sliders
-            latitude = station.internal_meshcat.GetSliderValue("Latitude")
-            longitude = station.internal_meshcat.GetSliderValue("Longitude")
-            print(
-                colored(
-                    f"Executing trajectory along hemisphere at lat: {latitude:.2f}, long: {longitude:.2f}",
-                    "cyan",
-                )
-            )
+            # # Get lat and long from sliders
+            # latitude = station.internal_meshcat.GetSliderValue("Latitude")
+            # longitude = station.internal_meshcat.GetSliderValue("Longitude")
+            # print(
+            #     colored(
+            #         f"Executing trajectory along hemisphere at lat: {latitude:.2f}, long: {longitude:.2f}",
+            #         "cyan",
+            #     )
+            # )
 
-            # Generate trajectory waypoints along hemisphere
-            rot_des, pos_des = find_target_pose_on_hemisphere(
-                hemisphere_pos, latitude, longitude, hemisphere_radius
-            )
-            # Convert to RigidTransform
-            pose_target = RigidTransform(RotationMatrix(rot_des), pos_des)
+            # # Generate trajectory waypoints along hemisphere
+            # rot_des, pos_des = find_target_pose_on_hemisphere(
+            #     hemisphere_pos, latitude, longitude, hemisphere_radius
+            # )
+
+            pose_target = get_pose_from_scan_point(hemisphere_scan_points[scan_idx, :])
 
             # Get current end-effector pose from actual robot state
             station_context = station.GetMyContextFromRoot(simulator.get_context())
@@ -604,6 +654,13 @@ def main(use_hardware: bool) -> None:
                 colored(
                     "✓ Path plotted and saved to outputs/hemisphere_path.png", "green"
                 )
+            )
+
+            station.internal_meshcat.SetLine(
+                "desired_spiral_path",
+                path_points,
+                line_width=0.05,
+                rgba=Rgba(1, 1, 1, 1),
             )
 
             # plot t values to check that they are reasonable
@@ -731,6 +788,8 @@ def main(use_hardware: bool) -> None:
                     f"Simulator time when starting trajectory: {trajectory_start_time}"
                 )
                 print(colored("Starting trajectory execution!", "cyan"))
+                scan_idx += 1
+
                 state = State.MOVING
 
         elif state == State.MOVING:

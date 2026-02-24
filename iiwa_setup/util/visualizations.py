@@ -27,6 +27,9 @@ def add_sphere(
     collision=True,
 ):
     friction = CoulombFriction(static_friction=0.9, dynamic_friction=0.8)
+
+    if radius <= 0:
+        radius = 0.01  # default small radius to avoid issues with zero-size geometry
     sphere_shape = Sphere(radius)
     X_WC = RigidTransform(np.array(position))
 
