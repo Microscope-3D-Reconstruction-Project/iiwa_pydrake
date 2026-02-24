@@ -1,5 +1,6 @@
 # General imports
 import argparse
+import threading
 
 from enum import Enum, auto
 from pathlib import Path
@@ -43,7 +44,10 @@ from utils.kuka_geo_kin import KinematicsSolver
 class State(Enum):
     IDLE = auto()
     PLANNING = auto()
+    COMPUTING_IK = auto()
     MOVING = auto()
+    PLANNING_PATH_ALONG_OPTICAL_AXIS = auto()
+    MOVING_ALONG_OPTICAL_AXIS = auto()
 
 
 def plot_path_with_frames(
@@ -159,13 +163,26 @@ def generate_waypoints_down_optical_axis(
     Returns:
         List of RigidTransform representing the waypoints
     """
-    waypoints = []
+    path_points = []
+    path_rots = []
+
     for i in range(num_points):
-        # Linear interpolation along the optical axis (z-axis of end-effector)
-        t = i / (num_points - 1)
-        translation = pose_curr.translation() + t * pose_curr.rotation().matrix()[:, 2]
-        waypoints.append(RigidTransform(pose_curr.rotation(), translation))
-    return waypoints
+        # Move down the optical axis (negative z direction in end-effector frame)
+        delta_z = -0.1 * i / num_points  # Move down 10 cm over the course of the path
+        delta_transform = RigidTransform(
+            np.array([0, 0, delta_z])
+        )  # No rotation change, just translation down z-axis
+        waypoint = pose_curr @ delta_transform  # Apply the delta to the current pose
+        path_points.append(waypoint.translation())
+        path_rots.append(waypoint.rotation().matrix())
+
+    path_points = np.array(path_points).T  # Shape (3, num_points)
+
+    return (
+        path_points,
+        path_rots,
+        np.linspace(0, 5, num_points),
+    )  # Return time vector as well
 
 
 def generate_IK_solutions_for_path(path_points, path_rots, kinematics_solver, q_init):
@@ -201,6 +218,31 @@ def generate_IK_solutions_for_path(path_points, path_rots, kinematics_solver, q_
     trajectory_joint_poses = np.array(trajectory_joint_poses).T  # Shape (7, num_points)
 
     return trajectory_joint_poses
+
+
+def compute_ik_async(path_points, path_rots, kinematics_solver, q_init, ik_result, t):
+    trajectory_joint_poses = generate_IK_solutions_for_path(
+        path_points=path_points,
+        path_rots=path_rots,
+        kinematics_solver=kinematics_solver,
+        q_init=q_init,
+    )
+
+    print(f"Trajectory joint poses shape: {trajectory_joint_poses.shape}")
+    print(f"Current robot position: {q_init}")
+    print(f"First trajectory position: {trajectory_joint_poses[:, 0]}")
+    print(
+        f"Position error at start: {np.linalg.norm(q_init - trajectory_joint_poses[:, 0])}"
+    )
+
+    # Turn into piecewise polynomial trajectory
+    traj = PiecewisePolynomial.FirstOrderHold(t, trajectory_joint_poses)
+    print(f"Trajectory start_time: {traj.start_time()}, end_time: {traj.end_time()}")
+
+    # Store results
+    ik_result["trajectory"] = traj
+    ik_result["ready"] = True
+    print(colored("✓ IK computation complete!", "green"))
 
 
 def main(use_hardware: bool) -> None:
@@ -300,8 +342,12 @@ def main(use_hardware: bool) -> None:
     simulator.set_target_realtime_rate(1.0)
 
     station.internal_meshcat.AddButton("Execute Trajectory")
+    station.internal_meshcat.AddButton("Move Along Optical Axis")
     station.internal_meshcat.AddButton("Stop Simulation")
     execute_trajectory_clicks = 0
+    move_along_optical_axis_clicks = 0
+
+    new_move_along_optical_axis_clicks = 0
 
     # ====================================================================
     # Main Simulation Loop
@@ -329,12 +375,58 @@ def main(use_hardware: bool) -> None:
         new_execute_trajectory_clicks = station.internal_meshcat.GetButtonClicks(
             "Execute Trajectory"
         )
+        new_move_along_optical_axis_clicks = station.internal_meshcat.GetButtonClicks(
+            "Move Along Optical Axis"
+        )
 
         if prev_state != state:
             print(colored(f"State changed: {prev_state} -> {state}", "cyan"))
             prev_state = state
 
-        if state == State.IDLE:
+        if (
+            state == State.IDLE
+            and new_move_along_optical_axis_clicks > move_along_optical_axis_clicks
+        ):
+            move_along_optical_axis_clicks = new_move_along_optical_axis_clicks
+
+            # Get current end-effector pose from actual robot state
+            station_context = station.GetMyContextFromRoot(simulator.get_context())
+            internal_plant = station.get_internal_plant()
+            internal_plant_context = station.get_internal_plant_context()
+            eef_pose = internal_plant.GetFrameByName(
+                "microscope_tip_link"
+            ).CalcPoseInWorld(internal_plant_context)
+
+            path_points, path_rots, t = generate_waypoints_down_optical_axis(eef_pose)
+
+            plot_path_with_frames(
+                path_points,
+                path_rots,
+                output_path=Path(__file__).parent.parent
+                / "outputs"
+                / "optical_axis_path.png",
+                frame_scale=0.01,
+                num_frames=20,
+            )
+
+            q_curr = station.GetOutputPort("iiwa.position_measured").Eval(
+                station_context
+            )
+
+            print(colored("Starting IK computation in background...", "yellow"))
+
+            ik_result["trajectory"] = None
+            ik_result["ready"] = False
+            ik_thread = threading.Thread(
+                target=compute_ik_async,
+                args=(path_points, path_rots, kinematics_solver, q_curr, ik_result, t),
+                daemon=True,
+            )
+            ik_thread.start()
+
+            state = State.COMPUTING_IK
+
+        elif state == State.IDLE:
             # Check if current update is different from most recent update.
             # If it is, plan traj from current pose to new pose (not latest pose to new pose)
             eef_pose_teleop_context = eef_teleop.GetMyContextFromRoot(
@@ -416,6 +508,12 @@ def main(use_hardware: bool) -> None:
                 trajectory_start_time = simulator.get_context().get_time()
                 state = State.MOVING
 
+        elif state == State.COMPUTING_IK:
+            if ik_result["ready"]:
+                trajectory = ik_result["trajectory"]
+                trajectory_start_time = simulator.get_context().get_time()
+                state = State.MOVING
+
         elif state == State.MOVING:
             current_time = simulator.get_context().get_time()
             traj_time = current_time - trajectory_start_time
@@ -438,6 +536,7 @@ def main(use_hardware: bool) -> None:
         simulator.AdvanceTo(simulator.get_context().get_time() + 0.1)
 
     station.internal_meshcat.DeleteButton("Stop Simulation")
+    station.internal_meshcat.DeleteButton("Move Along Optical Axis")
     station.internal_meshcat.DeleteButton("Execute Trajectory")
 
 
