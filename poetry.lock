@@ -1588,6 +1588,30 @@ files = [
 ]
 
 [[package]]
+name = "nvidia-cuda-runtime-cu12"
+version = "12.9.79"
+description = "CUDA Runtime native Libraries"
+optional = false
+python-versions = ">=3"
+files = [
+    {file = "nvidia_cuda_runtime_cu12-12.9.79-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:83469a846206f2a733db0c42e223589ab62fd2fabac4432d2f8802de4bded0a4"},
+    {file = "nvidia_cuda_runtime_cu12-12.9.79-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:25bba2dfb01d48a9b59ca474a1ac43c6ebf7011f1b0b8cc44f54eb6ac48a96c3"},
+    {file = "nvidia_cuda_runtime_cu12-12.9.79-py3-none-win_amd64.whl", hash = "sha256:8e018af8fa02363876860388bd10ccb89eb9ab8fb0aa749aaf58430a9f7c4891"},
+]
+
+[[package]]
+name = "nvidia-curand-cu12"
+version = "10.3.10.19"
+description = "CURAND native runtime libraries"
+optional = false
+python-versions = ">=3"
+files = [
+    {file = "nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:de663377feb1697e1d30ed587b07d5721fdd6d2015c738d7528a6002a6134d37"},
+    {file = "nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:49b274db4780d421bd2ccd362e1415c13887c53c214f0d4b761752b8f9f6aa1e"},
+    {file = "nvidia_curand_cu12-10.3.10.19-py3-none-win_amd64.whl", hash = "sha256:e8129e6ac40dc123bd948e33d3e11b4aa617d87a583fa2f21b3210e90c743cde"},
+]
+
+[[package]]
 name = "omegaconf"
 version = "2.3.0"
 description = "A flexible configuration library"
@@ -2077,6 +2101,26 @@ files = [
 
 [package.extras]
 tests = ["pytest"]
+
+[[package]]
+name = "pycolmap-cuda12"
+version = "3.13.0"
+description = "COLMAP bindings"
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "pycolmap_cuda12-3.13.0-cp310-cp310-manylinux_2_34_x86_64.whl", hash = "sha256:132a070fce35f6e5689d9c6fedd58f06d21a281d1c3fabeea29cd939d6c31c4e"},
+    {file = "pycolmap_cuda12-3.13.0-cp311-cp311-manylinux_2_34_x86_64.whl", hash = "sha256:b625b9b8696ce98e2cf1031f9e581f1ba33336ff4b68b74c7e3fa6b9f420bd43"},
+    {file = "pycolmap_cuda12-3.13.0-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:da80d10df5325fbb14d48ff79265660b6ba5d604875579101b6bf97cfe7740f2"},
+    {file = "pycolmap_cuda12-3.13.0-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:5556b82ce973d21cd5cc41db0e59fe87e34cafaa1ff96765c2c9f8acce8b6d66"},
+    {file = "pycolmap_cuda12-3.13.0-cp314-cp314-manylinux_2_34_x86_64.whl", hash = "sha256:bdc1d1012fd9085e286000bc0480d751f3d6773088b219ab24c7af6e01715710"},
+    {file = "pycolmap_cuda12-3.13.0-cp39-cp39-manylinux_2_34_x86_64.whl", hash = "sha256:2ef4a331fed1991f8d5767c54897b78df44de867533f935866279451b65ee0eb"},
+]
+
+[package.dependencies]
+numpy = "*"
+nvidia-cuda-runtime-cu12 = "12.9.79"
+nvidia-curand-cu12 = "10.3.10.19"
 
 [[package]]
 name = "pycparser"
@@ -2823,4 +2867,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "~3.10"
-content-hash = "41e3c33d15603976efce0f6865e837c58754dbdadda45ab337f2bed7441ee5e3"
+content-hash = "66f636727e19dc9e859b019f57a88921b114aa9806d3d6d5b2817f06b2755efc"
