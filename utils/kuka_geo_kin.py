@@ -36,14 +36,16 @@ class KinematicsSolver:
     Kinematics solver for KUKA LBR iiwa 14 R820 robot.
     """
 
-    def __init__(self, station):
+    def __init__(self, station, r, v):
         self.kin = self.get_kin()  # Get kinematic parameters of KUKA iiwa 14 R820 robot
         self.R_7M, self.p_7M_in_7 = self.get_microscope_offsets(
             station
         )  # Get the microscope mount offsets
 
         # self.r, self.v = np.array([-1, 0, 0]), np.array([0, 1, 0])
-        self.r, self.v = np.array([0, 0, -1]), np.array([0, 1, 0])
+        # self.r, self.v = np.array([0, 0, -1]), np.array([0, 1, 0])
+        self.r = r
+        self.v = v
 
     def get_microscope_offsets(self, station):
         """

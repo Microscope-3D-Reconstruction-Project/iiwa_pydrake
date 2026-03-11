@@ -16,6 +16,9 @@ matplotlib.use("Agg")  # Use interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Personal files
+from demo_config import get_config
+
 # Drake imports
 from manipulation.meshcat_utils import WsgButton
 from manipulation.scenarios import AddIiwaDifferentialIK
@@ -24,6 +27,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from pydrake.all import (
     AddFrameTriadIllustration,
     ApplySimulatorConfig,
+    Box,
     ConstantVectorSource,
     DiagramBuilder,
     FrameIndex,
@@ -37,7 +41,6 @@ from pydrake.all import (
 )
 from termcolor import colored
 
-# Personal files
 from iiwa_setup.iiwa import IiwaForwardKinematics, IiwaHardwareStationDiagram
 from iiwa_setup.util.traj_planning import create_traj_from_q1_to_q2
 from utils.kuka_geo_kin import KinematicsSolver
@@ -540,7 +543,7 @@ def generate_hemisphere_waypoints(
 
 
 def generate_poses_along_hemisphere(
-    center, radius, pose_curr, pose_target, hemisphere_axis, num_spirals=2
+    center, radius, pose_curr, pose_target, hemisphere_axis, speed_factor=1.0
 ):
     """
     Args:
@@ -556,7 +559,7 @@ def generate_poses_along_hemisphere(
     # Step 1: Generate shortest path along hemisphere surface
     A = pose_curr.translation()
     B = pose_target.translation()
-    path_points, t = hemisphere_slerp(A, B, center, radius)
+    path_points, t = hemisphere_slerp(A, B, center, radius, speed_factor=speed_factor)
 
     # Generate rotation matrices along the path using the sphere_frame function
     path_rots = []
@@ -574,6 +577,7 @@ def generate_waypoints_down_optical_axis(
     num_points: int = 100,
     # t_final: float = 2,
     distance: float = 0.025,
+    speed_factor: float = 1.0,
 ):
     """
     Generate waypoints along the optical axis of the current end-effector pose.
@@ -590,7 +594,7 @@ def generate_waypoints_down_optical_axis(
     path_rots = []
 
     # Make t_final relative to distance.
-    t_final = distance * 2 / 0.025
+    t_final = (distance * 2 / 0.025) / speed_factor
 
     for i in range(num_points):
         # Move down the optical axis (negative z direction in end-effector frame)
@@ -967,6 +971,8 @@ def compute_hemisphere_traj_async(
     scan_idx=0,
     joint_lower_limits=None,
     joint_upper_limits=None,
+    speed_factor=1.0,
+    max_joint_velocities=None,
 ):
     hemisphere_points, hemisphere_rots, hemisphere_t = generate_poses_along_hemisphere(
         center=hemisphere_pos,
@@ -974,6 +980,7 @@ def compute_hemisphere_traj_async(
         pose_curr=eef_pose,
         pose_target=pose_target,
         hemisphere_axis=hemisphere_axis,
+        speed_factor=speed_factor,
     )
 
     trajectory_joint_poses = generate_IK_solutions_for_path(
@@ -995,7 +1002,6 @@ def compute_hemisphere_traj_async(
     ik_result["trajectory_joint_poses"] = trajectory_joint_poses
     ik_result["time"] = hemisphere_t
     ik_result["scan_idx"] = scan_idx
-    ik_result["ready"] = True
 
     # Generate and save hemisphere trajectory plot (non-blocking, thread-safe)
     if plot_trajectories:
@@ -1046,7 +1052,7 @@ def compute_hemisphere_traj_async(
 
     # Check to make sure velocities are within limits, if not, raise error to trigger replanning with slower speed
     velocities_are_valid, _, max_recorded_velocity = check_joint_velocities(
-        trajectory_joint_poses, hemisphere_t
+        trajectory_joint_poses, hemisphere_t, max_joint_velocities=max_joint_velocities
     )
     print(
         colored(
@@ -1055,15 +1061,27 @@ def compute_hemisphere_traj_async(
         )
     )
     if not velocities_are_valid:
-        raise ValueError("joint velocity limit(s) exceeded in hemisphere trajectory")
+        print(
+            colored(
+                "❌ Joint velocity limit(s) exceeded in hemisphere trajectory", "red"
+            )
+        )
+        ik_result["valid"] = False
+        ik_result["ready"] = True
+        return
 
     joints_are_valid, num_violations = check_joint_limits(
         trajectory_joint_poses, joint_lower_limits, joint_upper_limits
     )
 
     if not joints_are_valid:
-        raise ValueError("joint limit(s) exceeded in hemisphere trajectory")
+        print(colored("❌ Joint limit(s) exceeded in hemisphere trajectory", "red"))
+        ik_result["valid"] = False
+        ik_result["ready"] = True
+        return
 
+    ik_result["valid"] = True
+    ik_result["ready"] = True
     print(colored("✓ Hemisphere IK computation complete!", "green"))
 
 
@@ -1078,10 +1096,12 @@ def compute_optical_axis_traj_async(
     joint_lower_limits=None,
     joint_upper_limits=None,
     distance: float = 0.025,
+    speed_factor: float = 1.0,
+    max_joint_velocities=None,
 ):
     print("q curr in compute_optical_axis_traj_async: ", np.rad2deg(q_curr).tolist())
     path_points, path_rots, t = generate_waypoints_down_optical_axis(
-        pose_curr, distance=distance
+        pose_curr, distance=distance, speed_factor=speed_factor
     )
 
     trajectory_joint_poses = generate_IK_solutions_for_path(
@@ -1107,7 +1127,6 @@ def compute_optical_axis_traj_async(
     ik_result["trajectory_joint_poses"] = trajectory_joint_poses
     ik_result["time"] = t
     ik_result["scan_idx"] = scan_idx
-    ik_result["ready"] = True
 
     # Generate and save optical axis trajectory plot (non-blocking, thread-safe)
     if plot_trajectories:
@@ -1158,7 +1177,7 @@ def compute_optical_axis_traj_async(
 
     # Check to make sure velocities are within limits, if not, raise error to trigger replanning with slower speed
     velocities_are_valid, _, max_recorded_velocity = check_joint_velocities(
-        trajectory_joint_poses, t
+        trajectory_joint_poses, t, max_joint_velocities=max_joint_velocities
     )
 
     print(
@@ -1169,19 +1188,36 @@ def compute_optical_axis_traj_async(
     )
 
     if not velocities_are_valid:
-        raise ValueError("joint velocity limit(s) exceeded in optical axis trajectory")
+        print(
+            colored(
+                "❌ Joint velocity limit(s) exceeded in optical axis trajectory", "red"
+            )
+        )
+        ik_result["valid"] = False
+        ik_result["ready"] = True
+        return
 
     joints_are_valid, num_violations = check_joint_limits(
         trajectory_joint_poses, joint_lower_limits, joint_upper_limits
     )
 
     if not joints_are_valid:
-        raise ValueError("joint limit(s) exceeded in optical axis trajectory")
+        print(colored("❌ Joint limit(s) exceeded in optical axis trajectory", "red"))
+        ik_result["valid"] = False
+        ik_result["ready"] = True
+        return
 
+    ik_result["valid"] = True
+    ik_result["ready"] = True
     print(colored("✓ Optical axis IK computation complete!", "green"))
 
 
-def main(use_hardware: bool) -> None:
+def main(use_hardware: bool, no_cam: bool = False) -> None:
+    # Load configuration
+    cfg = get_config(use_hardware)
+    speed_factor = cfg["speed_factor"]
+    max_joint_velocities = cfg["max_joint_velocities"]
+
     # Clean up trajectory output folders
     import shutil
 
@@ -1243,13 +1279,20 @@ def main(use_hardware: bool) -> None:
     # ==================================================================
     # Waypoint Generation Setup
     # ==================================================================
-    hemisphere_pos = np.array([0.5, 0.0, 0.255])
-    hemisphere_radius = 0.105
-    hemisphere_axis = np.array([0, 0, 1])
-    coverage = 0.10  # Fraction of hemisphere to cover
-    distance_along_optical_axis = 0.03
+    hemisphere_pos = np.array([0.8, 0.0, 0.36])
+    hemisphere_radius = 0.100
+    hemisphere_axis = np.array([-1, 0, 0])
+    num_scan_points = 50
+    coverage = 0.40  # Fraction of hemisphere to cover
+    distance_along_optical_axis = 0.025
     num_pictures = 30
     elbow_angle = np.pi / 2 + np.deg2rad(45)
+    scan_idx = 35  # Default is 1
+
+    r = np.array([0, 0, -1])
+    v = np.array([0, 1, 0])
+
+    # r, v = np.array([-1, 0, 0]), np.array([0, 1, 0])
 
     T_tip_to_camera = np.eye(4)
     T_tip_to_camera[:3, 3] = [0, 0, 0.1]
@@ -1266,10 +1309,9 @@ def main(use_hardware: bool) -> None:
         hemisphere_pos,
         hemisphere_radius,
         hemisphere_axis,
-        num_scan_points=30,
+        num_scan_points=num_scan_points,
         coverage=coverage,
     )
-    scan_idx = 1  # Default is 1
 
     # Plot waypoints for sanity check
     heimsphere_waypoints_output_path = (
@@ -1363,8 +1405,11 @@ def main(use_hardware: bool) -> None:
             f"Joint {i+1} (deg)", min_deg, max_deg, 0.1, 0
         )
 
+    # Add PSI angle slider (read-only visualization)
+    station.internal_meshcat.AddSlider("Current PSI (deg)", -180, 180, 0.1, 0)
+
     # region Step 1) Solve IK for desired pose
-    kinematics_solver = KinematicsSolver(station)
+    kinematics_solver = KinematicsSolver(station, r, v)
 
     station_context = station.GetMyContextFromRoot(simulator.get_context())
 
@@ -1388,14 +1433,25 @@ def main(use_hardware: bool) -> None:
     ik_thread = None
     hemisphere_ik_result = {
         "ready": False,
+        "valid": True,
         "trajectory": None,
         "trajectory_start_time": None,
     }
     optical_axis_ik_result = {
         "ready": False,
+        "valid": True,
         "trajectory": None,
         "trajectory_start_time": None,
     }
+
+    # Initialize SEW Plane visualization (Actual)
+    station.internal_meshcat.SetObject(
+        "sew_plane", Box(0.8, 0.8, 0.001), Rgba(0.0, 0.5, 1.0, 0.3)
+    )
+    # Initialize Reference Plane visualization (Psi = 0)
+    station.internal_meshcat.SetObject(
+        "ref_plane", Box(0.8, 0.8, 0.001), Rgba(1.0, 1.0, 1.0, 0.2)
+    )
 
     # ---------------------------------------------------------------
     # Camera + two background threads
@@ -1409,50 +1465,62 @@ def main(use_hardware: bool) -> None:
     # At each pause the main loop just snapshots _latest_frame (a lock
     # grab, ~microseconds) and enqueues it → zero blocking on critical path.
     # ---------------------------------------------------------------
-    camera = cv2.VideoCapture(4)
-    camera.set(cv2.CAP_PROP_FPS, 30)
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-    if not camera.isOpened():
-        print(
-            colored(
-                "⚠ Could not open camera device 4 – frames will NOT be saved", "yellow"
+    camera = None
+    _latest_frame = None
+    _latest_frame_lock = None
+    _capture_stop = None
+    _frame_queue = None
+    _capture_thread = None
+    _writer_thread = None
+
+    if not no_cam:
+        camera = cv2.VideoCapture(4)
+        camera.set(cv2.CAP_PROP_FPS, 30)
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        if not camera.isOpened():
+            print(
+                colored(
+                    "⚠ Could not open camera device 4 – frames will NOT be saved",
+                    "yellow",
+                )
             )
-        )
 
-    _latest_frame = None  # most recent frame from camera
-    _latest_frame_lock = threading.Lock()  # guards _latest_frame
-    _capture_stop = threading.Event()  # set → capture thread exits
-    _frame_queue: queue.Queue = queue.Queue(maxsize=0)  # unbounded
+        _latest_frame_lock = threading.Lock()  # guards _latest_frame
+        _capture_stop = threading.Event()  # set → capture thread exits
+        _frame_queue: queue.Queue = queue.Queue(maxsize=0)  # unbounded
 
-    def _capture_loop():
-        """Runs in background; owns camera.read() entirely.
-        Continuously updates _latest_frame so the main loop always has
-        a fresh frame available without ever blocking on camera.read().
-        Also keeps the camera driver buffer drained between pauses.
-        """
-        nonlocal _latest_frame
-        while not _capture_stop.is_set():
-            ret, frame = camera.read()  # blocks at camera rate (~33 ms/frame)
-            if ret:
-                with _latest_frame_lock:
-                    _latest_frame = frame  # overwrite; only the latest matters
+        def _capture_loop():
+            """Runs in background; owns camera.read() entirely.
+            Continuously updates _latest_frame so the main loop always has
+            a fresh frame available without ever blocking on camera.read().
+            Also keeps the camera driver buffer drained between pauses.
+            """
+            nonlocal _latest_frame
+            while not _capture_stop.is_set():
+                ret, frame = camera.read()  # blocks at camera rate (~33 ms/frame)
+                if ret:
+                    with _latest_frame_lock:
+                        _latest_frame = frame  # overwrite; only the latest matters
 
-    def _writer_loop():
-        """Handles all cv2.imwrite() calls off the critical path."""
-        while True:
-            item = _frame_queue.get()
-            if item is None:  # sentinel – exit
+        def _writer_loop():
+            """Handles all cv2.imwrite() calls off the critical path."""
+            while True:
+                item = _frame_queue.get()
+                if item is None:  # sentinel – exit
+                    _frame_queue.task_done()
+                    break
+                frame_data, path_str = item
+                cv2.imwrite(path_str, frame_data)
                 _frame_queue.task_done()
-                break
-            frame_data, path_str = item
-            cv2.imwrite(path_str, frame_data)
-            _frame_queue.task_done()
 
-    _capture_thread = threading.Thread(target=_capture_loop, daemon=True)
-    _writer_thread = threading.Thread(target=_writer_loop, daemon=True)
-    _capture_thread.start()
-    _writer_thread.start()
+        _capture_thread = threading.Thread(target=_capture_loop, daemon=True)
+        _writer_thread = threading.Thread(target=_writer_loop, daemon=True)
+        _capture_thread.start()
+        _writer_thread.start()
+        print(colored("✓ Camera threads started", "cyan"))
+    else:
+        print(colored("✓ Camera disabled via --no_cam", "yellow"))
 
     # Per-scan metadata
     scan_frame_dir = None  # Path to current scan's frame folder
@@ -1470,6 +1538,81 @@ def main(use_hardware: bool) -> None:
         if state != prev_state:
             print(colored(f"State changed: {prev_state} -> {state}", "grey"))
             prev_state = state
+
+        # ------------------------------------------------------------------
+        # Update SEW (Shoulder-Elbow-Wrist) Plane Visualization
+        # ------------------------------------------------------------------
+        station_context = station.GetMyContextFromRoot(simulator.get_context())
+        internal_plant = station.get_internal_plant()
+        internal_plant_context = station.get_internal_plant_context()
+
+        # Joint 2, 4, 6 frames
+        p_J2 = (
+            internal_plant.GetFrameByName("iiwa_link_2")
+            .CalcPoseInWorld(internal_plant_context)
+            .translation()
+        )
+        p_J4 = (
+            internal_plant.GetFrameByName("iiwa_link_4")
+            .CalcPoseInWorld(internal_plant_context)
+            .translation()
+        )
+        p_J6 = (
+            internal_plant.GetFrameByName("iiwa_link_6")
+            .CalcPoseInWorld(internal_plant_context)
+            .translation()
+        )
+
+        # Vectors for plane math
+        v24 = p_J4 - p_J2
+        v26 = p_J6 - p_J2
+        normal = np.cross(v26, v24)
+        norm_val = np.linalg.norm(normal)
+
+        if norm_val > 1e-4:
+            normal = normal / norm_val
+            # Use v24 as the local x-axis for stability
+            x_axis = v24 / np.linalg.norm(v24)
+            y_axis = np.cross(normal, x_axis)
+            R_WP = RotationMatrix(np.column_stack([x_axis, y_axis, normal]))
+            centroid = (p_J2 + p_J4 + p_J6) / 3.0
+            station.internal_meshcat.SetTransform(
+                "sew_plane", RigidTransform(R_WP, centroid)
+            )
+
+        # Update Reference Plane (using r, v from outer scope)
+        p_SW = p_J6 - p_J2
+        norm_SW = np.linalg.norm(p_SW)
+        if norm_SW > 1e-4:
+            e_SW = p_SW / norm_SW
+            kr = np.cross(e_SW - r, v)
+            norm_kr = np.linalg.norm(kr)
+            if norm_kr > 1e-4:
+                kr_unit = kr / norm_kr
+                kx = np.cross(kr_unit, e_SW)
+                norm_kx = np.linalg.norm(kx)
+                if norm_kx > 1e-4:
+                    ex = kx / norm_kx
+                    ref_normal = np.cross(e_SW, ex)
+                    R_WR = RotationMatrix(np.column_stack([e_SW, ex, ref_normal]))
+                    station.internal_meshcat.SetTransform(
+                        "ref_plane", RigidTransform(R_WR, (p_J2 + p_J6) / 2.0)
+                    )
+
+                    # Calculate and print PSI angle in real-time
+                    # Use the cross/dot logic from SEWStereo.fwd_kin for the signed angle
+                    n_hat_sew = normal
+                    n_hat_ref = ref_normal
+
+                    cross_dot = np.dot(n_hat_sew, np.cross(e_SW, n_hat_ref))
+                    dot_product = np.dot(n_hat_sew, n_hat_ref)
+                    psi_rad = np.arctan2(cross_dot, dot_product)
+
+                    # Update PSI slider in real-time
+                    station.internal_meshcat.SetSliderValue(
+                        "Current PSI (deg)", np.rad2deg(psi_rad)
+                    )
+        # ------------------------------------------------------------------
 
         if state == State.IDLE:
             if station.internal_meshcat.GetButtonClicks("Plan Move to Start") > 0:
@@ -1568,6 +1711,8 @@ def main(use_hardware: bool) -> None:
                     scan_idx,
                     joint_lower_limits,
                     joint_upper_limits,
+                    speed_factor,
+                    max_joint_velocities,
                 ),
                 daemon=True,
             )
@@ -1587,6 +1732,8 @@ def main(use_hardware: bool) -> None:
                     joint_lower_limits,
                     joint_upper_limits,
                     distance_along_optical_axis,
+                    speed_factor,
+                    max_joint_velocities,
                 ),
                 daemon=True,
             )
@@ -1596,15 +1743,10 @@ def main(use_hardware: bool) -> None:
 
         elif state == State.COMPUTING_IKS:
             # Wait for IK computation to complete
-            if (
-                hemisphere_ik_result["ready"]
-                and optical_axis_ik_result["ready"]
-                and station.internal_meshcat.GetButtonClicks("Execute Trajectory")
-                > num_execute_traj_clicks
-            ):
-                num_execute_traj_clicks = station.internal_meshcat.GetButtonClicks(
-                    "Execute Trajectory"
-                )
+            if hemisphere_ik_result["ready"] and optical_axis_ik_result["ready"]:
+                # if not hemisphere_ik_result["valid"] or not optical_axis_ik_result["valid"]:
+                #     print(colored("❌ IK computation failed. Quitting program.", "red"))
+                #     break
 
                 hemisphere_trajectory = hemisphere_ik_result["trajectory"]
                 optical_axis_trajectory = optical_axis_ik_result["trajectory"]
@@ -1654,7 +1796,8 @@ def main(use_hardware: bool) -> None:
 
                 scan_idx += 1
 
-                state = State.MOVING_DOWN_OPTICAL_AXIS
+                # state = State.MOVING_DOWN_OPTICAL_AXIS
+                state = State.MOVING_ALONG_HEMISPHERE
 
         elif state == State.MOVING_TO_START:
             current_time = simulator.get_context().get_time()
@@ -1712,26 +1855,29 @@ def main(use_hardware: bool) -> None:
 
                 elapsed_pause = current_time - pause_start_sim_time
                 if elapsed_pause >= 0.5:
-                    # Grab the latest frame the capture thread has buffered.
+                    # Grab the latest frame the capture thread has buffered (if camera enabled).
                     # This is a lock snapshot (~microseconds) – no blocking read.
-                    with _latest_frame_lock:
-                        frame = (
-                            _latest_frame.copy() if _latest_frame is not None else None
-                        )
-                    if frame is not None and scan_frame_dir is not None:
-                        frame_path = str(
-                            scan_frame_dir / f"frame_{scan_frame_idx:05d}.jpg"
-                        )
-                        _frame_queue.put((frame, frame_path))
-                        scan_frame_idx += 1
-                        print(
-                            colored(
-                                f"  📷 Photo {scan_frame_idx}/{num_pictures} "
-                                f"at traj_t={hold_traj_time:.3f}s "
-                                f"→ frame_{scan_frame_idx-1:05d}.jpg",
-                                "cyan",
+                    if not no_cam:
+                        with _latest_frame_lock:
+                            frame = (
+                                _latest_frame.copy()
+                                if _latest_frame is not None
+                                else None
                             )
-                        )
+                        if frame is not None and scan_frame_dir is not None:
+                            frame_path = str(
+                                scan_frame_dir / f"frame_{scan_frame_idx:05d}.jpg"
+                            )
+                            _frame_queue.put((frame, frame_path))
+                            scan_frame_idx += 1
+                            print(
+                                colored(
+                                    f"  📷 Photo {scan_frame_idx}/{num_pictures} "
+                                    f"at traj_t={hold_traj_time:.3f}s "
+                                    f"→ frame_{scan_frame_idx-1:05d}.jpg",
+                                    "cyan",
+                                )
+                            )
 
                     # Shift trajectory_start_time so the robot resumes
                     # from exactly the point it paused at.
@@ -1870,15 +2016,16 @@ def main(use_hardware: bool) -> None:
         station.internal_meshcat.DeleteSlider(f"Joint {i+1} (deg)")
 
     # Shut down background threads cleanly.
-    # 1. Stop the capture thread (exits on next camera.read() return)
-    _capture_stop.set()
-    _capture_thread.join(timeout=5)
-    camera.release()
-    # 2. Drain and stop the writer thread
-    _frame_queue.put(None)  # sentinel: tells writer thread to exit
-    _frame_queue.join()  # wait for all queued imwrite()s to complete
-    _writer_thread.join(timeout=10)
-    print(colored("✓ Frame writer flushed and camera released", "grey"))
+    if not no_cam and camera is not None:
+        # 1. Stop the capture thread (exits on next camera.read() return)
+        _capture_stop.set()
+        _capture_thread.join(timeout=5)
+        camera.release()
+        # 2. Drain and stop the writer thread
+        _frame_queue.put(None)  # sentinel: tells writer thread to exit
+        _frame_queue.join()  # wait for all queued imwrite()s to complete
+        _writer_thread.join(timeout=10)
+        print(colored("✓ Frame writer flushed and camera released", "grey"))
 
 
 if __name__ == "__main__":
@@ -1888,6 +2035,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to use real world hardware.",
     )
+    parser.add_argument(
+        "--no_cam",
+        action="store_true",
+        help="Disable camera threads (no frames will be saved).",
+    )
 
     args = parser.parse_args()
-    main(use_hardware=args.use_hardware)
+    main(use_hardware=args.use_hardware, no_cam=args.no_cam)

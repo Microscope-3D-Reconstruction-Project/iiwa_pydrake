@@ -1244,7 +1244,8 @@ def main(use_hardware: bool) -> None:
     hemisphere_pos = np.array([0.5, 0.0, 0.255])
     hemisphere_radius = 0.115
     hemisphere_axis = np.array([0, 0, 1])
-    coverage = 0.10  # Fraction of hemisphere to cover
+    num_scan_points = 15
+    coverage = 0.20  # Fraction of hemisphere to cover
 
     distance_along_optical_axis = 0.04
     elbow_angle = np.pi / 2 + np.deg2rad(45)
@@ -1255,7 +1256,7 @@ def main(use_hardware: bool) -> None:
         hemisphere_pos,
         hemisphere_radius,
         hemisphere_axis,
-        num_scan_points=15,
+        num_scan_points=num_scan_points,
         coverage=coverage,
     )
     scan_idx = 1  # Default is 1
